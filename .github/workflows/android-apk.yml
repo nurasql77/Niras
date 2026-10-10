@@ -6,7 +6,7 @@ on:
       drive_file_id:
         description: "Google Drive APK file ID"
         required: true
-        default: "1QedxHN_bVYlr_2lEHqKig0IEXd47fzzx"
+        default: "14UV16nRMrBgQmKVxNbKrEov7bQXnkjMn"
 
       english:
         description: "Overlay English files"
@@ -121,11 +121,11 @@ jobs:
 
           echo
           echo "NDK:"
-          ls -la "$ANDROID_HOME/ndk/${NDK_VERSION}"
+          ls -la "\( ANDROID_HOME/ndk/ \){NDK_VERSION}"
 
           echo
           echo "CMake:"
-          "$ANDROID_HOME/cmake/${CMAKE_VERSION}/bin/cmake" --version
+          "\( ANDROID_HOME/cmake/ \){CMAKE_VERSION}/bin/cmake" --version
 
 
       # --------------------------------------------------
@@ -214,7 +214,7 @@ jobs:
           echo "Downloading SDL ${SDL_VERSION}..."
 
           curl -fL \
-            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz" \
+            "https://github.com/libsdl-org/SDL/releases/download/release-\( {SDL_VERSION}/SDL2- \){SDL_VERSION}.tar.gz" \
             -o /tmp/SDL2.tar.gz
 
           test -s /tmp/SDL2.tar.gz
