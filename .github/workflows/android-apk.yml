@@ -131,6 +131,196 @@ jobs:
           sed -i "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" android/app/src/main/AndroidManifest.xml
           grep 'android:label' android/app/src/main/AndroidManifest.xml
 
+      - name: Add touch controls
+        run: |
+          set -e
+          D=android/app/src/main/java/com/raport/redalert
+          cat > "$D/TouchControls.java" <<'JAVAEOF'
+          package com.raport.redalert;
+
+          import android.app.Activity;
+          import android.graphics.Color;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.SystemClock;
+          import android.util.DisplayMetrics;
+          import android.util.Log;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.InputDevice;
+          import android.view.KeyCharacterMap;
+          import android.view.KeyEvent;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import org.libsdl.app.SDLActivity;
+
+          /** On-screen touch buttons that send the game's own hotkeys. */
+          final class TouchControls {
+              private static final String TAG = "TouchControls";
+
+              private final Activity activity;
+              private final FrameLayout panel;
+
+              static void attach(Activity activity) {
+                  try {
+                      new TouchControls(activity);
+                  } catch (Throwable t) {
+                      Log.e(TAG, "Touch controls failed to attach", t);
+                  }
+              }
+
+              private TouchControls(Activity a) {
+                  activity = a;
+                  FrameLayout root = new FrameLayout(a);
+                  panel = new FrameLayout(a);
+                  root.addView(panel, new FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  int cell = dp(52);
+                  int gap = dp(4);
+                  int left = dp(28);
+                  int bottom = dp(12);
+                  int top = dp(12);
+
+                  // Top-left: Menu (Esc) and HUD (hide/show the buttons)
+                  TextView menu = makeKeyButton("\u041c\u0435\u043d\u044e", KeyEvent.KEYCODE_ESCAPE, 13);
+                  panel.addView(menu, params(dp(72), cell, Gravity.TOP | Gravity.START, left, top, 0, 0));
+
+                  TextView hud = makeButton("HUD", 13);
+                  hud.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                              panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                          }
+                          return true;
+                      }
+                  });
+                  root.addView(hud, params(dp(60), cell, Gravity.TOP | Gravity.START,
+                      left + dp(72) + gap * 2, top, 0, 0));
+
+                  // Bottom-left: scroll pad (arrow keys)
+                  panel.addView(makeKeyButton("\u25C0", KeyEvent.KEYCODE_DPAD_LEFT, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left, 0, 0, bottom));
+                  panel.addView(makeKeyButton("\u25BC", KeyEvent.KEYCODE_DPAD_DOWN, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom));
+                  panel.addView(makeKeyButton("\u25B6", KeyEvent.KEYCODE_DPAD_RIGHT, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + 2 * (cell + gap), 0, 0, bottom));
+                  panel.addView(makeKeyButton("\u25B2", KeyEvent.KEYCODE_DPAD_UP, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom + cell + gap));
+
+                  // Bottom-centre: All / Stop / Guard / Cancel
+                  LinearLayout row = new LinearLayout(a);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  int w = dp(66);
+                  row.addView(makeKeyButton("\u0412\u0441\u0435", KeyEvent.KEYCODE_E, 13), rowParams(w, cell, gap));
+                  row.addView(makeKeyButton("\u0421\u0442\u043e\u043f", KeyEvent.KEYCODE_S, 13), rowParams(w, cell, gap));
+                  row.addView(makeKeyButton("\u041e\u0445\u0440\u0430\u043d\u0430", KeyEvent.KEYCODE_G, 13), rowParams(w, cell, gap));
+
+                  TextView cancel = makeButton("\u041e\u0442\u043c\u0435\u043d\u0430", 13);
+                  cancel.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                              v.setAlpha(0.6f);
+                              rightClick();
+                          } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
+                              v.setAlpha(1f);
+                          }
+                          return true;
+                      }
+                  });
+                  row.addView(cancel, rowParams(w, cell, gap));
+
+                  int screenW = a.getResources().getDisplayMetrics().widthPixels;
+                  panel.addView(row, params(ViewGroup.LayoutParams.WRAP_CONTENT, cell,
+                      Gravity.BOTTOM | Gravity.START, (int) (screenW * 0.36f), 0, 0, bottom));
+
+                  a.addContentView(root, new ViewGroup.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              }
+
+              private TextView makeKeyButton(String label, final int keyCode, int sp) {
+                  TextView b = makeButton(label, sp);
+                  b.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          int action = e.getAction();
+                          if (action == MotionEvent.ACTION_DOWN) {
+                              v.setAlpha(0.6f);
+                              sendKey(keyCode, true);
+                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                              v.setAlpha(1f);
+                              sendKey(keyCode, false);
+                          }
+                          return true;
+                      }
+                  });
+                  return b;
+              }
+
+              private TextView makeButton(String label, int sp) {
+                  TextView b = new TextView(activity);
+                  b.setText(label);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  b.setGravity(Gravity.CENTER);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xB3141A1F);
+                  bg.setCornerRadius(dp(10));
+                  b.setBackground(bg);
+                  return b;
+              }
+
+              private void sendKey(int keyCode, boolean down) {
+                  long t = SystemClock.uptimeMillis();
+                  KeyEvent event = new KeyEvent(t, t,
+                      down ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, 0, 0,
+                      KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
+                  activity.dispatchKeyEvent(event);
+              }
+
+              /** Right mouse click (deselect / cancel) in the middle of the map area. */
+              private void rightClick() {
+                  DisplayMetrics dm = activity.getResources().getDisplayMetrics();
+                  float x = dm.widthPixels * 0.4f;
+                  float y = dm.heightPixels * 0.5f;
+                  SDLActivity.onNativeMouse(2, MotionEvent.ACTION_DOWN, x, y, false);
+                  SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, x, y, false);
+              }
+
+              private int dp(int value) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
+                      activity.getResources().getDisplayMetrics());
+              }
+
+              private static FrameLayout.LayoutParams params(int w, int h, int gravity,
+                                                             int l, int t, int r, int b) {
+                  FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
+                  p.setMargins(l, t, r, b);
+                  return p;
+              }
+
+              private static LinearLayout.LayoutParams rowParams(int w, int h, int gap) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+                  p.setMargins(gap, 0, gap, 0);
+                  return p;
+              }
+          }
+          JAVAEOF
+          python3 - <<'PYEOF'
+          p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
+          s = open(p, encoding="utf-8").read()
+          needle = "super.onCreate(savedInstanceState);"
+          assert needle in s, "onCreate not found"
+          s = s.replace(needle, needle + "\n        TouchControls.attach(this);", 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "TouchControls" "$D/RedAlertActivity.java"
+
       - name: Build APK
         run: |
           set -e
