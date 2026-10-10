@@ -4,13 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       drive_file_id:
-        description: "Game data source: Google Drive file ID of the APK (link sharing = anyone with the link)"
+        description: "Google Drive APK file ID"
+        required: true
         default: "1QedxHN_bVYlr_2lEHqKig0IEXd47fzzx"
       english:
-        description: "Overlay English files on top of the Russian data (true/false)"
+        description: "Overlay English files"
+        required: true
         default: "false"
       app_name:
-        description: "App name shown on the phone"
+        description: "App name"
+        required: true
         default: "Berlions"
 
 env:
@@ -20,10 +23,13 @@ env:
 jobs:
   apk:
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
@@ -31,48 +37,87 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: current
 
-      - name: Android SDK packages
+      - name: Install Android SDK packages
         run: |
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}" "cmake;3.22.1"
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;3.22.1"
+
           yes | sdkmanager --licenses || true
 
-      - name: Get game data from the APK on Drive
+      - name: Download game data
         env:
           FILE_ID: ${{ inputs.drive_file_id }}
           ENGLISH: ${{ inputs.english }}
         run: |
-          pip install gdown
-          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O source.apk
+          python3 -m pip install --upgrade gdown
+
+          gdown \
+            "https://drive.google.com/uc?id=${FILE_ID}" \
+            -O source.apk
+
           mkdir -p assets/redalert tmp
-          unzip -q source.apk 'assets/mobsik/*.zip' -d tmp
-          unzip -q -o tmp/assets/mobsik/red-alert-data.zip -d assets/redalert
+
+          unzip -q source.apk \
+            'assets/mobsik/*.zip' \
+            -d tmp
+
+          unzip -q -o \
+            tmp/assets/mobsik/red-alert-data.zip \
+            -d assets/redalert
+
           if [ "$ENGLISH" = "true" ]; then
-            unzip -q -o tmp/assets/mobsik/red-alert-data-en.zip -d assets/redalert
+            unzip -q -o \
+              tmp/assets/mobsik/red-alert-data-en.zip \
+              -d assets/redalert
           fi
-          test -f assets/redalert/allies/INSTALL/REDALERT.INI
+
+          test -f \
+            assets/redalert/allies/INSTALL/REDALERT.INI
+
           rm -rf source.apk tmp
+
           du -sh assets/redalert
 
-      - name: Fetch SDL2 sources
+      - name: Download SDL2
         run: |
           mkdir -p android/third_party
-          curl -L "https://github.com/libsdl-org/SDL/releases/download/release-\( {SDL_VERSION}/SDL2- \){SDL_VERSION}.tar.gz" | tar xz -C android/third_party
-          mv "android/third_party/SDL2-${SDL_VERSION}" android/third_party/SDL
 
-      - name: Set app name
+          curl -fL \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz" \
+            -o /tmp/SDL2.tar.gz
+
+          tar -xzf /tmp/SDL2.tar.gz \
+            -C android/third_party
+
+          mv \
+            "android/third_party/SDL2-${SDL_VERSION}" \
+            android/third_party/SDL
+
+      - name: Set application name
         env:
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          sed -i "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" android/app/src/main/AndroidManifest.xml
+          sed -i \
+            "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" \
+            android/app/src/main/AndroidManifest.xml
 
-      - name: Build debug APK
-        run: gradle -p android :app:assembleDebug --no-daemon
+      - name: Build APK
+        run: |
+          gradle \
+            -p android \
+            :app:assembleDebug \
+            --no-daemon
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: redalert-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
