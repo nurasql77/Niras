@@ -7,14 +7,17 @@ on:
         description: "Google Drive APK file ID"
         required: true
         default: "14UV16nRMrBgQmKVxNbKrEov7bQXnkjMn"
+
       english:
         description: "Overlay English files"
         required: true
         default: "false"
+
       app_name:
         description: "App name"
         required: true
         default: "Berlions"
+
       controls:
         description: "Add on-screen buttons (true/false)"
         required: true
@@ -32,8 +35,18 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # --------------------------------------------------
+      # JAVA
+      # --------------------------------------------------
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -42,44 +55,93 @@ jobs:
           java-version: "17"
           cache: gradle
 
+
+      # --------------------------------------------------
+      # ANDROID SDK
+      # --------------------------------------------------
+
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
+
 
       - name: Accept Android licenses
         run: |
           yes | sdkmanager --licenses || true
 
+
       - name: Install Android SDK packages
         run: |
           set -e
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}"
+
           yes | sdkmanager --licenses || true
-          echo "Installed packages:"
-          sdkmanager --list_installed | head -50
+
+          echo "Installed Android packages:"
+          sdkmanager --list_installed | head -100
+
+
+      # --------------------------------------------------
+      # GRADLE
+      # --------------------------------------------------
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.4.1"
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+
+      # --------------------------------------------------
+      # TOOLCHAIN CHECK
+      # --------------------------------------------------
 
       - name: Check build tools
         run: |
           set -e
-          echo "Java:"
+
+          echo "=============================="
+          echo "Java"
+          echo "=============================="
           java -version
+
           echo
-          echo "Gradle:"
+          echo "=============================="
+          echo "Gradle"
+          echo "=============================="
           gradle --version
+
           echo
-          echo "Android SDK: $ANDROID_HOME"
+          echo "=============================="
+          echo "Android SDK"
+          echo "=============================="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
           echo
-          echo "NDK check:"
-          ls -la "$ANDROID_HOME/ndk/28.2.13676358" | head -5
+          echo "=============================="
+          echo "NDK"
+          echo "=============================="
+
+          test -d "$ANDROID_HOME/ndk/${NDK_VERSION}"
+
+          ls -la "$ANDROID_HOME/ndk/${NDK_VERSION}" | head -10
+
           echo
-          echo "CMake check:"
-          "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version
+          echo "=============================="
+          echo "CMake"
+          echo "=============================="
+
+          "$ANDROID_HOME/cmake/${CMAKE_VERSION}/bin/cmake" --version
+
+
+      # --------------------------------------------------
+      # DOWNLOAD RED ALERT DATA
+      # --------------------------------------------------
 
       - name: Download game data
         env:
@@ -87,53 +149,148 @@ jobs:
           ENGLISH: ${{ inputs.english }}
         run: |
           set -e
+
           python3 -m pip install --upgrade gdown
+
           echo "Downloading source APK..."
-          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O source.apk
+
+          gdown \
+            "https://drive.google.com/uc?id=${FILE_ID}" \
+            -O source.apk
+
           test -s source.apk
+
+          echo "Downloaded source APK:"
           ls -lh source.apk
-          mkdir -p assets/redalert tmp
+
+          mkdir -p assets/redalert
+          mkdir -p tmp
+
           echo "Extracting Red Alert data..."
-          unzip -q source.apk 'assets/mobsik/*.zip' -d tmp
-          test -f tmp/assets/mobsik/red-alert-data.zip
-          unzip -q -o tmp/assets/mobsik/red-alert-data.zip -d assets/redalert
+
+          unzip -q source.apk \
+            'assets/mobsik/*.zip' \
+            -d tmp
+
+          test -f \
+            tmp/assets/mobsik/red-alert-data.zip
+
+          echo "Extracting red-alert-data.zip..."
+
+          unzip -q -o \
+            tmp/assets/mobsik/red-alert-data.zip \
+            -d assets/redalert
+
           if [ "$ENGLISH" = "true" ]; then
+
             echo "Applying English data..."
-            test -f tmp/assets/mobsik/red-alert-data-en.zip
-            unzip -q -o tmp/assets/mobsik/red-alert-data-en.zip -d assets/redalert
+
+            test -f \
+              tmp/assets/mobsik/red-alert-data-en.zip
+
+            unzip -q -o \
+              tmp/assets/mobsik/red-alert-data-en.zip \
+              -d assets/redalert
+
           fi
-          test -f assets/redalert/allies/INSTALL/REDALERT.INI
+
+          test -f \
+            assets/redalert/allies/INSTALL/REDALERT.INI
+
           echo "REDALERT.INI found."
+
+          echo "Game data size:"
           du -sh assets/redalert
-          rm -rf source.apk tmp
+
+          rm -rf source.apk
+          rm -rf tmp
+
+
+      # --------------------------------------------------
+      # SDL2
+      # --------------------------------------------------
 
       - name: Download SDL2
         run: |
           set -e
+
           mkdir -p android/third_party
-          echo "Downloading SDL 2.32.10..."
-          curl -fL "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz" -o /tmp/SDL2.tar.gz
+
+          echo "Downloading SDL ${SDL_VERSION}..."
+
+          curl -fL \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz" \
+            -o /tmp/SDL2.tar.gz
+
           test -s /tmp/SDL2.tar.gz
-          tar -xzf /tmp/SDL2.tar.gz -C android/third_party
+
+          tar -xzf \
+            /tmp/SDL2.tar.gz \
+            -C android/third_party
+
           rm -rf android/third_party/SDL
-          mv android/third_party/SDL2-2.32.10 android/third_party/SDL
-          ls -la android/third_party/SDL | head -10
+
+          mv \
+            "android/third_party/SDL2-${SDL_VERSION}" \
+            android/third_party/SDL
+
+          echo "SDL directory:"
+          ls -la android/third_party/SDL | head -20
+
+
+      # --------------------------------------------------
+      # PROJECT CHECK
+      # --------------------------------------------------
 
       - name: Check Android project
         run: |
           set -e
-          test -f assets/redalert/allies/INSTALL/REDALERT.INI
-          test -f android/app/CMakeLists.txt
-          test -f android/app/build.gradle.kts
+
+          test -f \
+            assets/redalert/allies/INSTALL/REDALERT.INI
+
+          test -f \
+            android/app/CMakeLists.txt
+
+          test -f \
+            android/app/build.gradle.kts
+
+          test -f \
+            android/build.gradle.kts
+
+          test -f \
+            android/settings.gradle.kts
+
+          test -f \
+            android/app/src/main/AndroidManifest.xml
+
           echo "Project checks passed."
+
+
+      # --------------------------------------------------
+      # APP NAME
+      # --------------------------------------------------
 
       - name: Set application name
         env:
           APP_NAME: ${{ inputs.app_name }}
         run: |
           set -e
-          sed -i "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" android/app/src/main/AndroidManifest.xml
-          grep 'android:label' android/app/src/main/AndroidManifest.xml
+
+          sed -i \
+            "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" \
+            android/app/src/main/AndroidManifest.xml
+
+          echo "Application name: ${APP_NAME}"
+
+          grep \
+            'android:label' \
+            android/app/src/main/AndroidManifest.xml
+
+
+      # --------------------------------------------------
+      # SIGNING KEY
+      # --------------------------------------------------
 
       - name: Prepare signing key
         env:
@@ -141,30 +298,124 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           set -e
-          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "Add repository secrets KEYSTORE_B64 and KEYSTORE_PASSWORD (Settings > Secrets and variables > Actions)."
+
+          echo "Checking signing secrets..."
+
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "ERROR: KEYSTORE_B64 is empty."
             exit 1
           fi
+
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "ERROR: KEYSTORE_PASSWORD is empty."
+            exit 1
+          fi
+
+          echo "Secrets are present."
+
           KS="$RUNNER_TEMP/release.p12"
-          echo "$KEYSTORE_B64" | base64 -d > "$KS"
-          ALIAS=$(keytool -list -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASSWORD" | awk -F, '/PrivateKeyEntry/ {print $1; exit}')
-          test -n "$ALIAS"
-          FP=$(keytool -list -v -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASSWORD" -alias "$ALIAS" | awk '/SHA256:/ {print $2; exit}' | tr -d ':' | tr 'A-F' 'a-f')
-          test "${#FP}" -eq 64
+
+          echo "Decoding PKCS12 keystore..."
+
+          echo "$KEYSTORE_B64" | base64 --decode > "$KS"
+
+          if [ ! -s "$KS" ]; then
+            echo "ERROR: decoded keystore is empty."
+            exit 1
+          fi
+
+          echo "Keystore decoded successfully."
+
+          echo "Checking PKCS12 keystore..."
+
+          if ! keytool \
+              -list \
+              -keystore "$KS" \
+              -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              >/dev/null 2>/tmp/keytool.err
+          then
+
+            echo "ERROR: keytool cannot open the PKCS12 keystore."
+
+            echo "Check that:"
+            echo "1. KEYSTORE_B64 contains the complete Base64."
+            echo "2. KEYSTORE_PASSWORD is correct."
+            echo "3. The file is actually PKCS12."
+
+            exit 1
+          fi
+
+          echo "PKCS12 keystore opened successfully."
+
+
+          # Find private key alias
+
+          ALIAS=$(
+            keytool \
+              -list \
+              -keystore "$KS" \
+              -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" |
+            awk -F, '/PrivateKeyEntry/ {print $1; exit}'
+          )
+
+          if [ -z "$ALIAS" ]; then
+            echo "ERROR: no PrivateKeyEntry found."
+            exit 1
+          fi
+
+          echo "Private key entry found."
+
+
+          # Get certificate SHA-256
+
+          FP=$(
+            keytool \
+              -list \
+              -v \
+              -keystore "$KS" \
+              -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -alias "$ALIAS" |
+            awk '/SHA256:/ {print $2; exit}' |
+            tr -d ':' |
+            tr 'A-F' 'a-f'
+          )
+
+          if [ "${#FP}" -ne 64 ]; then
+            echo "ERROR: invalid SHA-256 fingerprint."
+            exit 1
+          fi
+
+          echo "Certificate fingerprint detected."
+
           echo "KS_PATH=$KS" >> "$GITHUB_ENV"
           echo "KS_ALIAS=$ALIAS" >> "$GITHUB_ENV"
           echo "KS_FP=$FP" >> "$GITHUB_ENV"
-          printf '#define RA_EXPECTED_CERT_SHA256 "%s"\n' "$FP" > PORT/ANDROID/src/ra_sig_hash.h
-          echo "Certificate SHA-256: $FP"
+
+          mkdir -p PORT/ANDROID/src
+
+          printf \
+            '#define RA_EXPECTED_CERT_SHA256 "%s"\n' \
+            "$FP" \
+            > PORT/ANDROID/src/ra_sig_hash.h
+
+          echo "Signing key prepared successfully."
+
+
+      # --------------------------------------------------
+      # SIGNATURE CHECK
+      # --------------------------------------------------
 
       - name: Add signature check
         run: |
           set -e
+
           cat > PORT/ANDROID/src/ra_signature_check.h <<'SIGEOF'
           #ifndef RA_SIGNATURE_CHECK_H
           #define RA_SIGNATURE_CHECK_H
 
-          /* Generated by the build workflow: RA_EXPECTED_CERT_SHA256 = hex SHA-256 of the signing certificate. */
           #include "ra_sig_hash.h"
 
           #include <SDL.h>
@@ -179,129 +430,390 @@ jobs:
                   env->ExceptionClear();
                   return true;
               }
+
               return false;
           }
 
-          static bool ra_sig_hash_matches(JNIEnv *env, jobject signature)
+          static bool ra_sig_hash_matches(
+              JNIEnv *env,
+              jobject signature)
           {
-              static char const *hex = "0123456789abcdef";
-              jclass sig_cls = env->GetObjectClass(signature);
-              jmethodID to_bytes = env->GetMethodID(sig_cls, "toByteArray", "()[B");
-              jbyteArray cert = (jbyteArray)env->CallObjectMethod(signature, to_bytes);
+              static const char *hex =
+                  "0123456789abcdef";
+
+              jclass sig_cls =
+                  env->GetObjectClass(signature);
+
+              jmethodID to_bytes =
+                  env->GetMethodID(
+                      sig_cls,
+                      "toByteArray",
+                      "()[B");
+
+              if (!to_bytes) {
+                  return false;
+              }
+
+              jbyteArray cert =
+                  (jbyteArray)env->CallObjectMethod(
+                      signature,
+                      to_bytes);
+
               if (ra_sig_clear(env) || !cert) {
                   return false;
               }
-              jclass md_cls = env->FindClass("java/security/MessageDigest");
-              jmethodID get_instance = env->GetStaticMethodID(md_cls, "getInstance",
-                  "(Ljava/lang/String;)Ljava/security/MessageDigest;");
-              jstring algorithm = env->NewStringUTF("SHA-256");
-              jobject md = env->CallStaticObjectMethod(md_cls, get_instance, algorithm);
+
+              jclass md_cls =
+                  env->FindClass(
+                      "java/security/MessageDigest");
+
+              if (!md_cls) {
+                  return false;
+              }
+
+              jmethodID get_instance =
+                  env->GetStaticMethodID(
+                      md_cls,
+                      "getInstance",
+                      "(Ljava/lang/String;)Ljava/security/MessageDigest;");
+
+              if (!get_instance) {
+                  return false;
+              }
+
+              jstring algorithm =
+                  env->NewStringUTF("SHA-256");
+
+              jobject md =
+                  env->CallStaticObjectMethod(
+                      md_cls,
+                      get_instance,
+                      algorithm);
+
               if (ra_sig_clear(env) || !md) {
                   return false;
               }
-              jmethodID digest = env->GetMethodID(md_cls, "digest", "([B)[B");
-              jbyteArray hash = (jbyteArray)env->CallObjectMethod(md, digest, cert);
-              if (ra_sig_clear(env) || !hash || env->GetArrayLength(hash) != 32) {
+
+              jmethodID digest =
+                  env->GetMethodID(
+                      md_cls,
+                      "digest",
+                      "([B)[B");
+
+              if (!digest) {
                   return false;
               }
-              jbyte bytes[32];
-              env->GetByteArrayRegion(hash, 0, 32, bytes);
-              char text[65];
-              for (int i = 0; i < 32; ++i) {
-                  unsigned char b = (unsigned char)bytes[i];
-                  text[i * 2] = hex[b >> 4];
-                  text[i * 2 + 1] = hex[b & 15];
+
+              jbyteArray hash =
+                  (jbyteArray)env->CallObjectMethod(
+                      md,
+                      digest,
+                      cert);
+
+              if (ra_sig_clear(env) ||
+                  !hash ||
+                  env->GetArrayLength(hash) != 32)
+              {
+                  return false;
               }
+
+              jbyte bytes[32];
+
+              env->GetByteArrayRegion(
+                  hash,
+                  0,
+                  32,
+                  bytes);
+
+              char text[65];
+
+              for (int i = 0; i < 32; ++i) {
+
+                  unsigned char b =
+                      (unsigned char)bytes[i];
+
+                  text[i * 2] =
+                      hex[b >> 4];
+
+                  text[i * 2 + 1] =
+                      hex[b & 15];
+              }
+
               text[64] = 0;
-              return strcmp(text, RA_EXPECTED_CERT_SHA256) == 0;
+
+              return strcmp(
+                  text,
+                  RA_EXPECTED_CERT_SHA256) == 0;
           }
+
 
           static bool ra_signature_ok(void)
           {
-              JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
-              jobject activity = (jobject)SDL_AndroidGetActivity();
+              JNIEnv *env =
+                  (JNIEnv *)SDL_AndroidGetJNIEnv();
+
+              jobject activity =
+                  (jobject)SDL_AndroidGetActivity();
+
               if (!env || !activity) {
                   return false;
               }
-              jclass act_cls = env->GetObjectClass(activity);
-              jmethodID get_pm = env->GetMethodID(act_cls, "getPackageManager", "()Landroid/content/pm/PackageManager;");
-              jmethodID get_pkg = env->GetMethodID(act_cls, "getPackageName", "()Ljava/lang/String;");
-              jobject pm = env->CallObjectMethod(activity, get_pm);
-              jstring pkg = (jstring)env->CallObjectMethod(activity, get_pkg);
-              if (ra_sig_clear(env) || !pm || !pkg) {
+
+              jclass act_cls =
+                  env->GetObjectClass(activity);
+
+              jmethodID get_pm =
+                  env->GetMethodID(
+                      act_cls,
+                      "getPackageManager",
+                      "()Landroid/content/pm/PackageManager;");
+
+              jmethodID get_pkg =
+                  env->GetMethodID(
+                      act_cls,
+                      "getPackageName",
+                      "()Ljava/lang/String;");
+
+              if (!get_pm || !get_pkg) {
                   return false;
               }
-              jclass pm_cls = env->GetObjectClass(pm);
-              jmethodID get_pi = env->GetMethodID(pm_cls, "getPackageInfo",
-                  "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
 
-              /* Android 9+ : PackageInfo.signingInfo (GET_SIGNING_CERTIFICATES = 0x08000000) */
-              jobject info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x08000000);
+              jobject pm =
+                  env->CallObjectMethod(
+                      activity,
+                      get_pm);
+
+              jstring pkg =
+                  (jstring)env->CallObjectMethod(
+                      activity,
+                      get_pkg);
+
+              if (ra_sig_clear(env) ||
+                  !pm ||
+                  !pkg)
+              {
+                  return false;
+              }
+
+              jclass pm_cls =
+                  env->GetObjectClass(pm);
+
+              jmethodID get_pi =
+                  env->GetMethodID(
+                      pm_cls,
+                      "getPackageInfo",
+                      "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
+
+              if (!get_pi) {
+                  return false;
+              }
+
+
+              /*
+               * Android 9+
+               *
+               * GET_SIGNING_CERTIFICATES
+               * = 0x08000000
+               */
+
+              jobject info =
+                  env->CallObjectMethod(
+                      pm,
+                      get_pi,
+                      pkg,
+                      (jint)0x08000000);
+
               if (!ra_sig_clear(env) && info) {
-                  jclass info_cls = env->GetObjectClass(info);
-                  jfieldID si_field = env->GetFieldID(info_cls, "signingInfo", "Landroid/content/pm/SigningInfo;");
+
+                  jclass info_cls =
+                      env->GetObjectClass(info);
+
+                  jfieldID si_field =
+                      env->GetFieldID(
+                          info_cls,
+                          "signingInfo",
+                          "Landroid/content/pm/SigningInfo;");
+
                   if (!ra_sig_clear(env) && si_field) {
-                      jobject si = env->GetObjectField(info, si_field);
+
+                      jobject si =
+                          env->GetObjectField(
+                              info,
+                              si_field);
+
                       if (si) {
-                          jclass si_cls = env->GetObjectClass(si);
-                          jmethodID get_signers = env->GetMethodID(si_cls, "getApkContentsSigners",
-                              "()[Landroid/content/pm/Signature;");
-                          jobjectArray signers = (jobjectArray)env->CallObjectMethod(si, get_signers);
-                          if (!ra_sig_clear(env) && signers && env->GetArrayLength(signers) == 1) {
-                              jobject one = env->GetObjectArrayElement(signers, 0);
-                              return one && ra_sig_hash_matches(env, one);
+
+                          jclass si_cls =
+                              env->GetObjectClass(si);
+
+                          jmethodID get_signers =
+                              env->GetMethodID(
+                                  si_cls,
+                                  "getApkContentsSigners",
+                                  "()[Landroid/content/pm/Signature;");
+
+                          if (!get_signers) {
+                              return false;
                           }
+
+                          jobjectArray signers =
+                              (jobjectArray)env->CallObjectMethod(
+                                  si,
+                                  get_signers);
+
+                          if (!ra_sig_clear(env) &&
+                              signers &&
+                              env->GetArrayLength(signers) == 1)
+                          {
+                              jobject one =
+                                  env->GetObjectArrayElement(
+                                      signers,
+                                      0);
+
+                              return one &&
+                                  ra_sig_hash_matches(
+                                      env,
+                                      one);
+                          }
+
                           return false;
                       }
                   }
               }
 
-              /* Older Android: PackageInfo.signatures (GET_SIGNATURES = 0x40) */
-              info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x40);
+
+              /*
+               * Older Android
+               */
+
+              info =
+                  env->CallObjectMethod(
+                      pm,
+                      get_pi,
+                      pkg,
+                      (jint)0x40);
+
               if (ra_sig_clear(env) || !info) {
                   return false;
               }
-              jclass info_cls = env->GetObjectClass(info);
-              jfieldID sigs_field = env->GetFieldID(info_cls, "signatures", "[Landroid/content/pm/Signature;");
-              if (ra_sig_clear(env) || !sigs_field) {
+
+              jclass info_cls =
+                  env->GetObjectClass(info);
+
+              jfieldID sigs_field =
+                  env->GetFieldID(
+                      info_cls,
+                      "signatures",
+                      "[Landroid/content/pm/Signature;");
+
+              if (ra_sig_clear(env) ||
+                  !sigs_field)
+              {
                   return false;
               }
-              jobjectArray sigs = (jobjectArray)env->GetObjectField(info, sigs_field);
-              if (!sigs || env->GetArrayLength(sigs) != 1) {
+
+              jobjectArray sigs =
+                  (jobjectArray)env->GetObjectField(
+                      info,
+                      sigs_field);
+
+              if (!sigs ||
+                  env->GetArrayLength(sigs) != 1)
+              {
                   return false;
               }
-              jobject one = env->GetObjectArrayElement(sigs, 0);
-              return one && ra_sig_hash_matches(env, one);
+
+              jobject one =
+                  env->GetObjectArrayElement(
+                      sigs,
+                      0);
+
+              return one &&
+                  ra_sig_hash_matches(
+                      env,
+                      one);
           }
+
 
           static void ra_verify_signature_or_exit(void)
           {
               if (!ra_signature_ok()) {
-                  __android_log_print(ANDROID_LOG_ERROR, "RedAlert", "Invalid APK signature");
-                  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Berlions", "Invalid APK signature", NULL);
+
+                  __android_log_print(
+                      ANDROID_LOG_ERROR,
+                      "RedAlert",
+                      "Invalid APK signature");
+
+                  SDL_ShowSimpleMessageBox(
+                      SDL_MESSAGEBOX_ERROR,
+                      "Berlions",
+                      "Invalid APK signature",
+                      NULL);
+
                   exit(1);
               }
           }
 
           #endif
           SIGEOF
+
+
           python3 - <<'PYEOF'
           p = "PORT/ANDROID/src/android_main.cpp"
-          s = open(p, encoding="utf-8").read()
+
+          s = open(
+              p,
+              encoding="utf-8"
+          ).read()
+
           a = "#include <windows.h>"
           b = "    select_resource_root();"
-          assert a in s and b in s
-          s = s.replace(a, a + '\n#include "ra_signature_check.h"', 1)
-          s = s.replace(b, "    ra_verify_signature_or_exit();\n" + b, 1)
-          open(p, "w", encoding="utf-8").write(s)
+
+          assert a in s, "windows.h include not found"
+          assert b in s, "select_resource_root() not found"
+
+          if '#include "ra_signature_check.h"' not in s:
+
+              s = s.replace(
+                  a,
+                  a + '\n#include "ra_signature_check.h"',
+                  1
+              )
+
+          if "ra_verify_signature_or_exit();" not in s:
+
+              s = s.replace(
+                  b,
+                  "    ra_verify_signature_or_exit();\n" + b,
+                  1
+              )
+
+          open(
+              p,
+              "w",
+              encoding="utf-8"
+          ).write(s)
           PYEOF
-          grep -n "ra_" PORT/ANDROID/src/android_main.cpp
+
+          echo "Signature check added."
+
+          grep -n "ra_" \
+            PORT/ANDROID/src/android_main.cpp
+
+
+      # --------------------------------------------------
+      # TOUCH CONTROLS
+      # --------------------------------------------------
 
       - name: Add touch controls
         if: ${{ inputs.controls == 'true' }}
         run: |
           set -e
+
           D=android/app/src/main/java/com/raport/redalert
+
+          mkdir -p "$D"
+
           cat > "$D/TouchControls.java" <<'JAVAEOF'
           package com.raport.redalert;
 
@@ -310,7 +822,6 @@ jobs:
           import android.graphics.drawable.GradientDrawable;
           import android.os.SystemClock;
           import android.util.DisplayMetrics;
-          import android.util.Log;
           import android.util.TypedValue;
           import android.view.Gravity;
           import android.view.InputDevice;
@@ -322,198 +833,586 @@ jobs:
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
           import android.widget.TextView;
+
           import org.libsdl.app.SDLActivity;
 
-          /** On-screen touch buttons that send the game's own hotkeys. */
           final class TouchControls {
-              private static final String TAG = "TouchControls";
+
+              private static final String TAG =
+                  "TouchControls";
 
               private final Activity activity;
               private final FrameLayout panel;
 
               static void attach(Activity activity) {
+
                   try {
                       new TouchControls(activity);
                   } catch (Throwable t) {
-                      Log.e(TAG, "Touch controls failed to attach", t);
+                      android.util.Log.e(
+                          TAG,
+                          "Touch controls failed",
+                          t);
                   }
               }
 
               private TouchControls(Activity a) {
+
                   activity = a;
-                  FrameLayout root = new FrameLayout(a);
-                  panel = new FrameLayout(a);
-                  root.addView(panel, new FrameLayout.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  FrameLayout root =
+                      new FrameLayout(a);
+
+                  panel =
+                      new FrameLayout(a);
+
+                  root.addView(
+                      panel,
+                      new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  );
+
 
                   int cell = dp(52);
                   int gap = dp(4);
+
                   int left = dp(28);
                   int bottom = dp(12);
                   int top = dp(12);
 
-                  // Top-left: Menu (Esc) and HUD (hide/show the buttons)
-                  TextView menu = makeKeyButton("\u041c\u0435\u043d\u044e", KeyEvent.KEYCODE_ESCAPE, 13);
-                  panel.addView(menu, params(dp(72), cell, Gravity.TOP | Gravity.START, left, top, 0, 0));
 
-                  TextView hud = makeButton("HUD", 13);
-                  hud.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                              panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                  TextView menu =
+                      makeKeyButton(
+                          "\u041c\u0435\u043d\u044e",
+                          KeyEvent.KEYCODE_ESCAPE,
+                          13
+                      );
+
+                  panel.addView(
+                      menu,
+                      params(
+                          dp(72),
+                          cell,
+                          Gravity.TOP | Gravity.START,
+                          left,
+                          top,
+                          0,
+                          0
+                      )
+                  );
+
+
+                  TextView hud =
+                      makeButton(
+                          "HUD",
+                          13
+                      );
+
+                  hud.setOnClickListener(
+                      v -> {
+
+                          if (panel.getVisibility()
+                              == View.VISIBLE) {
+
+                              panel.setVisibility(
+                                  View.GONE
+                              );
+
+                          } else {
+
+                              panel.setVisibility(
+                                  View.VISIBLE
+                              );
                           }
-                          return true;
                       }
-                  });
-                  root.addView(hud, params(dp(60), cell, Gravity.TOP | Gravity.START,
-                      left + dp(72) + gap * 2, top, 0, 0));
+                  );
 
-                  // Bottom-left: scroll pad (arrow keys)
-                  panel.addView(makeKeyButton("\u25C0", KeyEvent.KEYCODE_DPAD_LEFT, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left, 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25BC", KeyEvent.KEYCODE_DPAD_DOWN, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25B6", KeyEvent.KEYCODE_DPAD_RIGHT, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + 2 * (cell + gap), 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25B2", KeyEvent.KEYCODE_DPAD_UP, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom + cell + gap));
 
-                  // Bottom-centre: All / Stop / Guard / Cancel
-                  LinearLayout row = new LinearLayout(a);
-                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  root.addView(
+                      hud,
+                      params(
+                          dp(60),
+                          cell,
+                          Gravity.TOP | Gravity.START,
+                          left + dp(72) + gap * 2,
+                          top,
+                          0,
+                          0
+                      )
+                  );
+
+
+                  // Direction buttons
+
+                  panel.addView(
+                      makeKeyButton(
+                          "\u25C0",
+                          KeyEvent.KEYCODE_DPAD_LEFT,
+                          20
+                      ),
+                      params(
+                          cell,
+                          cell,
+                          Gravity.BOTTOM | Gravity.START,
+                          left,
+                          0,
+                          0,
+                          bottom
+                      )
+                  );
+
+
+                  panel.addView(
+                      makeKeyButton(
+                          "\u25BC",
+                          KeyEvent.KEYCODE_DPAD_DOWN,
+                          20
+                      ),
+                      params(
+                          cell,
+                          cell,
+                          Gravity.BOTTOM | Gravity.START,
+                          left + cell + gap,
+                          0,
+                          0,
+                          bottom
+                      )
+                  );
+
+
+                  panel.addView(
+                      makeKeyButton(
+                          "\u25B6",
+                          KeyEvent.KEYCODE_DPAD_RIGHT,
+                          20
+                      ),
+                      params(
+                          cell,
+                          cell,
+                          Gravity.BOTTOM | Gravity.START,
+                          left + 2 * (cell + gap),
+                          0,
+                          0,
+                          bottom
+                      )
+                  );
+
+
+                  panel.addView(
+                      makeKeyButton(
+                          "\u25B2",
+                          KeyEvent.KEYCODE_DPAD_UP,
+                          20
+                      ),
+                      params(
+                          cell,
+                          cell,
+                          Gravity.BOTTOM | Gravity.START,
+                          left + cell + gap,
+                          0,
+                          0,
+                          bottom + cell + gap
+                      )
+                  );
+
+
+                  // Command buttons
+
+                  LinearLayout row =
+                      new LinearLayout(a);
+
+                  row.setOrientation(
+                      LinearLayout.HORIZONTAL
+                  );
+
                   int w = dp(66);
-                  row.addView(makeKeyButton("\u0412\u0441\u0435", KeyEvent.KEYCODE_E, 13), rowParams(w, cell, gap));
-                  row.addView(makeKeyButton("\u0421\u0442\u043e\u043f", KeyEvent.KEYCODE_S, 13), rowParams(w, cell, gap));
-                  row.addView(makeKeyButton("\u041e\u0445\u0440\u0430\u043d\u0430", KeyEvent.KEYCODE_G, 13), rowParams(w, cell, gap));
 
-                  TextView cancel = makeButton("\u041e\u0442\u043c\u0435\u043d\u0430", 13);
-                  cancel.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                              v.setAlpha(0.6f);
-                              rightClick();
-                          } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
-                              v.setAlpha(1f);
-                          }
-                          return true;
-                      }
-                  });
-                  row.addView(cancel, rowParams(w, cell, gap));
 
-                  int screenW = a.getResources().getDisplayMetrics().widthPixels;
-                  panel.addView(row, params(ViewGroup.LayoutParams.WRAP_CONTENT, cell,
-                      Gravity.BOTTOM | Gravity.START, (int) (screenW * 0.36f), 0, 0, bottom));
+                  row.addView(
+                      makeKeyButton(
+                          "\u0412\u0441\u0435",
+                          KeyEvent.KEYCODE_E,
+                          13
+                      ),
+                      rowParams(w, cell, gap)
+                  );
 
-                  a.addContentView(root, new ViewGroup.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  row.addView(
+                      makeKeyButton(
+                          "\u0421\u0442\u043e\u043f",
+                          KeyEvent.KEYCODE_S,
+                          13
+                      ),
+                      rowParams(w, cell, gap)
+                  );
+
+
+                  row.addView(
+                      makeKeyButton(
+                          "\u041e\u0445\u0440\u0430\u043d\u0430",
+                          KeyEvent.KEYCODE_G,
+                          13
+                      ),
+                      rowParams(w, cell, gap)
+                  );
+
+
+                  row.addView(
+                      makeKeyButton(
+                          "\u041e\u0442\u043c\u0435\u043d\u0430",
+                          KeyEvent.KEYCODE_ESCAPE,
+                          13
+                      ),
+                      rowParams(w, cell, gap)
+                  );
+
+
+                  int screenW =
+                      a.getResources()
+                          .getDisplayMetrics()
+                          .widthPixels;
+
+
+                  panel.addView(
+                      row,
+                      params(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          cell,
+                          Gravity.BOTTOM | Gravity.START,
+                          (int)(screenW * 0.36f),
+                          0,
+                          0,
+                          bottom
+                      )
+                  );
+
+
+                  a.addContentView(
+                      root,
+                      new ViewGroup.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  );
               }
 
-              private TextView makeKeyButton(String label, final int keyCode, int sp) {
-                  TextView b = makeButton(label, sp);
-                  b.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          int action = e.getAction();
-                          if (action == MotionEvent.ACTION_DOWN) {
-                              v.setAlpha(0.6f);
-                              sendKey(keyCode, true);
-                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                              v.setAlpha(1f);
-                              sendKey(keyCode, false);
+
+              private TextView makeKeyButton(
+                  String label,
+                  final int keyCode,
+                  int sp)
+              {
+                  TextView b =
+                      makeButton(label, sp);
+
+                  b.setOnTouchListener(
+                      new View.OnTouchListener() {
+
+                          @Override
+                          public boolean onTouch(
+                              View v,
+                              MotionEvent e)
+                          {
+                              int action =
+                                  e.getAction();
+
+                              if (action ==
+                                  MotionEvent.ACTION_DOWN)
+                              {
+                                  v.setAlpha(0.6f);
+                                  sendKey(
+                                      keyCode,
+                                      true
+                                  );
+
+                              } else if (
+                                  action ==
+                                      MotionEvent.ACTION_UP ||
+                                  action ==
+                                      MotionEvent.ACTION_CANCEL)
+                              {
+                                  v.setAlpha(1f);
+                                  sendKey(
+                                      keyCode,
+                                      false
+                                  );
+                              }
+
+                              return true;
                           }
-                          return true;
                       }
-                  });
+                  );
+
                   return b;
               }
 
-              private TextView makeButton(String label, int sp) {
-                  TextView b = new TextView(activity);
+
+              private TextView makeButton(
+                  String label,
+                  int sp)
+              {
+                  TextView b =
+                      new TextView(activity);
+
                   b.setText(label);
                   b.setTextColor(Color.WHITE);
-                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-                  b.setGravity(Gravity.CENTER);
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xB3141A1F);
-                  bg.setCornerRadius(dp(10));
+
+                  b.setTextSize(
+                      TypedValue.COMPLEX_UNIT_SP,
+                      sp
+                  );
+
+                  b.setGravity(
+                      Gravity.CENTER
+                  );
+
+                  GradientDrawable bg =
+                      new GradientDrawable();
+
+                  bg.setColor(
+                      0xB3141A1F
+                  );
+
+                  bg.setCornerRadius(
+                      dp(10)
+                  );
+
                   b.setBackground(bg);
+
                   return b;
               }
 
-              private void sendKey(int keyCode, boolean down) {
-                  long t = SystemClock.uptimeMillis();
-                  KeyEvent event = new KeyEvent(t, t,
-                      down ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, 0, 0,
-                      KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
-                  activity.dispatchKeyEvent(event);
+
+              private void sendKey(
+                  int keyCode,
+                  boolean down)
+              {
+                  long t =
+                      SystemClock.uptimeMillis();
+
+                  KeyEvent event =
+                      new KeyEvent(
+                          t,
+                          t,
+                          down
+                              ? KeyEvent.ACTION_DOWN
+                              : KeyEvent.ACTION_UP,
+                          keyCode,
+                          0,
+                          0,
+                          KeyCharacterMap.VIRTUAL_KEYBOARD,
+                          0,
+                          0,
+                          InputDevice.SOURCE_KEYBOARD
+                      );
+
+                  activity.dispatchKeyEvent(
+                      event
+                  );
               }
 
-              /** Right mouse click (deselect / cancel) in the middle of the map area. */
-              private void rightClick() {
-                  DisplayMetrics dm = activity.getResources().getDisplayMetrics();
-                  float x = dm.widthPixels * 0.4f;
-                  float y = dm.heightPixels * 0.5f;
-                  SDLActivity.onNativeMouse(2, MotionEvent.ACTION_DOWN, x, y, false);
-                  SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, x, y, false);
+
+              private int dp(int value)
+              {
+                  return (int)
+                      TypedValue.applyDimension(
+                          TypedValue.COMPLEX_UNIT_DIP,
+                          value,
+                          activity
+                              .getResources()
+                              .getDisplayMetrics()
+                      );
               }
 
-              private int dp(int value) {
-                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
-                      activity.getResources().getDisplayMetrics());
-              }
 
-              private static FrameLayout.LayoutParams params(int w, int h, int gravity,
-                                                             int l, int t, int r, int b) {
-                  FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
-                  p.setMargins(l, t, r, b);
+              private static FrameLayout.LayoutParams params(
+                  int w,
+                  int h,
+                  int gravity,
+                  int l,
+                  int t,
+                  int r,
+                  int b)
+              {
+                  FrameLayout.LayoutParams p =
+                      new FrameLayout.LayoutParams(
+                          w,
+                          h,
+                          gravity
+                      );
+
+                  p.setMargins(
+                      l,
+                      t,
+                      r,
+                      b
+                  );
+
                   return p;
               }
 
-              private static LinearLayout.LayoutParams rowParams(int w, int h, int gap) {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
-                  p.setMargins(gap, 0, gap, 0);
+
+              private static LinearLayout.LayoutParams rowParams(
+                  int w,
+                  int h,
+                  int gap)
+              {
+                  LinearLayout.LayoutParams p =
+                      new LinearLayout.LayoutParams(
+                          w,
+                          h
+                      );
+
+                  p.setMargins(
+                      gap,
+                      0,
+                      gap,
+                      0
+                  );
+
                   return p;
               }
           }
           JAVAEOF
+
+
           python3 - <<'PYEOF'
           p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
-          s = open(p, encoding="utf-8").read()
+
+          s = open(
+              p,
+              encoding="utf-8"
+          ).read()
+
           needle = "super.onCreate(savedInstanceState);"
-          assert needle in s, "onCreate not found"
-          s = s.replace(needle, needle + "\n        TouchControls.attach(this);", 1)
-          open(p, "w", encoding="utf-8").write(s)
+
+          assert needle in s, \
+              "onCreate not found"
+
+          if "TouchControls.attach(this);" not in s:
+
+              s = s.replace(
+                  needle,
+                  needle +
+                  "\n        TouchControls.attach(this);",
+                  1
+              )
+
+          open(
+              p,
+              "w",
+              encoding="utf-8"
+          ).write(s)
           PYEOF
-          grep -n "TouchControls" "$D/RedAlertActivity.java"
+
+          grep -n \
+            "TouchControls" \
+            "$D/RedAlertActivity.java"
+
+
+      # --------------------------------------------------
+      # BUILD
+      # --------------------------------------------------
 
       - name: Build APK
         run: |
           set -e
-          gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+          echo "Starting Gradle build..."
+
+          gradle \
+            -p android \
+            :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+
+      # --------------------------------------------------
+      # SIGN
+      # --------------------------------------------------
 
       - name: Sign APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           set -e
+
           BT="$ANDROID_HOME/build-tools/36.0.0"
-          OUT=android/app/build/outputs/apk/debug
-          "$BT/zipalign" -f -p 4 "$OUT/app-debug.apk" "$RUNNER_TEMP/aligned.apk"
-          "$BT/apksigner" sign --ks "$KS_PATH" --ks-key-alias "$KS_ALIAS" \
-            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
-            --out "$OUT/berlions-signed.apk" "$RUNNER_TEMP/aligned.apk"
-          "$BT/apksigner" verify --print-certs "$OUT/berlions-signed.apk" | tee /tmp/certs.txt
-          grep -qi "$KS_FP" /tmp/certs.txt
+
+          OUT="android/app/build/outputs/apk/debug"
+
+          INPUT="$OUT/app-debug.apk"
+
+          ALIGNED="$RUNNER_TEMP/aligned.apk"
+
+          SIGNED="$OUT/berlions-signed.apk"
+
+
+          test -f "$INPUT"
+
+
+          echo "Zipalign..."
+
+          "$BT/zipalign" \
+            -f \
+            -p \
+            4 \
+            "$INPUT" \
+            "$ALIGNED"
+
+
+          echo "Signing APK..."
+
+          "$BT/apksigner" sign \
+            --ks "$KS_PATH" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEYSTORE_PASSWORD \
+            --out "$SIGNED" \
+            "$ALIGNED"
+
+
+          echo "Verifying APK..."
+
+          "$BT/apksigner" verify \
+            --verbose \
+            --print-certs \
+            "$SIGNED"
+
+
+          "$BT/apksigner" verify \
+            "$SIGNED"
+
+
+          echo "APK signed successfully."
+
+
+      # --------------------------------------------------
+      # FINAL VERIFY
+      # --------------------------------------------------
 
       - name: Verify APK
         run: |
           set -e
+
           APK="android/app/build/outputs/apk/debug/berlions-signed.apk"
+
           test -f "$APK"
+
+          echo "Final APK:"
           ls -lh "$APK"
+
+          echo
+          echo "SHA-256:"
           sha256sum "$APK"
+
+
+      # --------------------------------------------------
+      # UPLOAD
+      # --------------------------------------------------
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
