@@ -35,16 +35,9 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # CHECKOUT
-      # ==========================================
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # ==========================================
-      # JAVA
-      # ==========================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -52,19 +45,11 @@ jobs:
           java-version: "17"
           cache: gradle
 
-
-      # ==========================================
-      # ANDROID SDK
-      # ==========================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
 
-
-      # ==========================================
-      # SDK / NDK / CMAKE
-      # ==========================================
       - name: Install Android SDK packages
         run: |
           set -e
@@ -77,19 +62,15 @@ jobs:
 
           yes | sdkmanager --licenses || true
 
-
-      # ==========================================
-      # GRADLE
-      # ==========================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
-
-      # ==========================================
+      # ------------------------------------------
       # GAME DATA
-      # ==========================================
+      # ------------------------------------------
+
       - name: Download game data
         env:
           FILE_ID: ${{ inputs.drive_file_id }}
@@ -124,13 +105,10 @@ jobs:
 
           rm -rf source.apk tmp
 
-          echo "Game data:"
-          du -sh assets/redalert
-
-
-      # ==========================================
+      # ------------------------------------------
       # SDL2
-      # ==========================================
+      # ------------------------------------------
+
       - name: Download SDL2
         run: |
           set -e
@@ -148,10 +126,10 @@ jobs:
             "android/third_party/SDL2-${SDL_VERSION}" \
             android/third_party/SDL
 
-
-      # ==========================================
+      # ------------------------------------------
       # PROJECT CHECK
-      # ==========================================
+      # ------------------------------------------
+
       - name: Check project
         run: |
           set -e
@@ -161,12 +139,10 @@ jobs:
           test -f android/app/src/main/AndroidManifest.xml
           test -f android/app/CMakeLists.txt
 
-          echo "Project structure OK"
-
-
-      # ==========================================
+      # ------------------------------------------
       # APP NAME
-      # ==========================================
+      # ------------------------------------------
+
       - name: Set application name
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -177,184 +153,50 @@ jobs:
             "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" \
             android/app/src/main/AndroidManifest.xml
 
-          grep 'android:label=' \
-            android/app/src/main/AndroidManifest.xml
+      # ------------------------------------------
+      # COPY NORMAL ANDROID PERMISSIONS
+      # FROM THE SOURCE APK
+      # ------------------------------------------
 
-
-      # ==========================================
-      # CHECK KEYSTORE
-      # ==========================================
-      - name: Check signing key
+      - name: Copy source APK permissions
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          FILE_ID: ${{ inputs.drive_file_id }}
         run: |
-          set -u
-
-          echo "======================================"
-          echo "CHECKING SIGNING KEY"
-          echo "======================================"
-
-          echo ""
-          echo "1. Checking secrets..."
-
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "ERROR: KEYSTORE_B64 is empty"
-            exit 1
-          fi
-
-          if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "ERROR: KEYSTORE_PASSWORD is empty"
-            exit 1
-          fi
-
-          echo "KEYSTORE_B64: present"
-          echo "KEYSTORE_PASSWORD: present"
-
-
-          echo ""
-          echo "2. Java environment..."
-
-          java -version
-
-          echo ""
-          echo "keytool location:"
-          command -v keytool
-
-
-          echo ""
-          echo "3. Base64 length..."
-
-          B64_LENGTH=$(printf '%s' "$KEYSTORE_B64" | wc -c)
-
-          echo "Base64 length: ${B64_LENGTH} characters"
-
-          if [ "$B64_LENGTH" -lt 100 ]; then
-            echo "ERROR: KEYSTORE_B64 is suspiciously short"
-            exit 1
-          fi
-
-
-          echo ""
-          echo "4. Decoding PKCS12..."
-
-          KS="$RUNNER_TEMP/release.p12"
-
-          if ! printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"; then
-            echo "ERROR: Base64 decoding failed"
-            exit 1
-          fi
-
-
-          echo ""
-          echo "5. Checking decoded file..."
-
-          if [ ! -s "$KS" ]; then
-            echo "ERROR: decoded keystore is empty"
-            exit 1
-          fi
-
-          ls -lh "$KS"
-
-          file "$KS"
-
-          KS_SIZE=$(stat -c%s "$KS")
-
-          echo "Keystore size: ${KS_SIZE} bytes"
-
-
-          echo ""
-          echo "6. SHA-256 of decoded keystore..."
-
-          SHA256=$(sha256sum "$KS" | awk '{print $1}')
-
-          echo "Keystore SHA-256:"
-          echo "$SHA256"
-
-
-          echo ""
-          echo "7. Testing PKCS12..."
-
-          set +e
-
-          keytool -list \
-            -v \
-            -keystore "$KS" \
-            -storetype PKCS12 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            > "$RUNNER_TEMP/keytool.out" \
-            2> "$RUNNER_TEMP/keytool.err"
-
-          RESULT=$?
-
           set -e
 
-          echo ""
-          echo "keytool exit code: $RESULT"
+          python3 -m pip install --upgrade gdown
 
+          gdown \
+            "https://drive.google.com/uc?id=${FILE_ID}" \
+            -O permission-source.apk
 
-          echo ""
-          echo "----- keytool stdout -----"
+          mkdir -p permission_tmp
 
-          cat "$RUNNER_TEMP/keytool.out" || true
+          unzip -q permission-source.apk \
+            'AndroidManifest.xml' \
+            -d permission_tmp || true
 
+          if [ -f permission_tmp/AndroidManifest.xml ]; then
+            echo "Source manifest found."
 
-          echo ""
-          echo "----- keytool stderr -----"
+            grep -o \
+              'android.permission.[A-Za-z0-9_.-]*' \
+              permission_tmp/AndroidManifest.xml \
+              | sort -u \
+              > permission_tmp/permissions.txt || true
 
-          cat "$RUNNER_TEMP/keytool.err" || true
-
-
-          if [ "$RESULT" -ne 0 ]; then
-
-            echo ""
-            echo "======================================"
-            echo "KEYSTORE CHECK FAILED"
-            echo "======================================"
-
-            echo ""
-            echo "Decoded file SHA-256:"
-            echo "$SHA256"
-
-            echo ""
-            echo "Possible causes:"
-            echo "1. KEYSTORE_PASSWORD does not match this PKCS12."
-            echo "2. KEYSTORE_B64 belongs to another .p12."
-            echo "3. KEYSTORE_B64 is incomplete."
-            echo "4. The .p12 file is corrupted."
-            echo "5. The file is not a valid PKCS12 keystore."
-
-            exit "$RESULT"
+            echo "Permissions found:"
+            cat permission_tmp/permissions.txt || true
+          else
+            echo "Source APK manifest is binary; permissions will not be copied."
           fi
 
+          rm -rf permission_tmp permission-source.apk
 
-          echo ""
-          echo "8. Searching for PrivateKeyEntry..."
+      # ------------------------------------------
+      # KEYSTORE
+      # ------------------------------------------
 
-          ALIAS=$(awk -F, \
-            '/PrivateKeyEntry/ {print $1; exit}' \
-            "$RUNNER_TEMP/keytool.out")
-
-
-          if [ -z "$ALIAS" ]; then
-            echo "ERROR: No PrivateKeyEntry found"
-            exit 1
-          fi
-
-          echo "Alias found: $ALIAS"
-
-
-          echo ""
-          echo "======================================"
-          echo "KEYSTORE IS VALID"
-          echo "PASSWORD IS CORRECT"
-          echo "PRIVATE KEY FOUND"
-          echo "======================================"
-
-
-      # ==========================================
-      # PREPARE SIGNING KEY
-      # ==========================================
       - name: Prepare signing key
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -362,26 +204,41 @@ jobs:
         run: |
           set -e
 
+          test -n "$KEYSTORE_B64"
+          test -n "$KEYSTORE_PASSWORD"
+
+          # Password must be ASCII for this PKCS12/keytool setup.
+          if printf '%s' "$KEYSTORE_PASSWORD" | LC_ALL=C grep -q '[^ -~]'; then
+            echo "ERROR: KEYSTORE_PASSWORD must contain ASCII characters only."
+            exit 1
+          fi
+
           KS="$RUNNER_TEMP/release.p12"
 
           printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
 
-          ALIAS=$(keytool -list \
-            -keystore "$KS" \
-            -storetype PKCS12 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            | awk -F, '/PrivateKeyEntry/ {print $1; exit}')
+          test -s "$KS"
+
+          ALIAS=$(
+            keytool -list \
+              -keystore "$KS" \
+              -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              | awk -F, '/PrivateKeyEntry/ {print $1; exit}'
+          )
 
           test -n "$ALIAS"
 
-          FP=$(keytool -list -v \
-            -keystore "$KS" \
-            -storetype PKCS12 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$ALIAS" \
-            | awk '/SHA256:/ {print $2; exit}' \
-            | tr -d ':' \
-            | tr 'A-F' 'a-f')
+          FP=$(
+            keytool -list -v \
+              -keystore "$KS" \
+              -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -alias "$ALIAS" \
+              | awk '/SHA256:/ {print $2; exit}' \
+              | tr -d ':' \
+              | tr 'A-F' 'a-f'
+          )
 
           test "${#FP}" -eq 64
 
@@ -394,12 +251,10 @@ jobs:
             "$FP" \
             > PORT/ANDROID/src/ra_sig_hash.h
 
-          echo "Certificate SHA-256: $FP"
-
-
-      # ==========================================
+      # ------------------------------------------
       # TOUCH CONTROLS
-      # ==========================================
+      # ------------------------------------------
+
       - name: Add touch controls
         if: ${{ inputs.controls == 'true' }}
         run: |
@@ -411,8 +266,8 @@ jobs:
           package com.ra.port;
 
           import android.app.Activity;
-          import android.widget.FrameLayout;
           import android.widget.Button;
+          import android.widget.FrameLayout;
 
           public class TouchControls {
 
@@ -437,29 +292,29 @@ jobs:
                   action.setText("A");
 
                   FrameLayout.LayoutParams leftLp =
-                      new FrameLayout.LayoutParams(180, 180);
+                      new FrameLayout.LayoutParams(160, 160);
                   leftLp.leftMargin = 30;
-                  leftLp.topMargin = 100;
+                  leftLp.topMargin = 300;
 
                   FrameLayout.LayoutParams rightLp =
-                      new FrameLayout.LayoutParams(180, 180);
-                  rightLp.leftMargin = 220;
-                  rightLp.topMargin = 100;
+                      new FrameLayout.LayoutParams(160, 160);
+                  rightLp.leftMargin = 210;
+                  rightLp.topMargin = 300;
 
                   FrameLayout.LayoutParams upLp =
-                      new FrameLayout.LayoutParams(180, 180);
-                  upLp.leftMargin = 125;
-                  upLp.topMargin = 0;
+                      new FrameLayout.LayoutParams(160, 160);
+                  upLp.leftMargin = 120;
+                  upLp.topMargin = 130;
 
                   FrameLayout.LayoutParams downLp =
-                      new FrameLayout.LayoutParams(180, 180);
-                  downLp.leftMargin = 125;
-                  downLp.topMargin = 200;
+                      new FrameLayout.LayoutParams(160, 160);
+                  downLp.leftMargin = 120;
+                  downLp.topMargin = 470;
 
                   FrameLayout.LayoutParams actionLp =
-                      new FrameLayout.LayoutParams(200, 200);
+                      new FrameLayout.LayoutParams(180, 180);
                   actionLp.leftMargin = 850;
-                  actionLp.topMargin = 200;
+                  actionLp.topMargin = 300;
 
                   root.addView(left, leftLp);
                   root.addView(right, rightLp);
@@ -470,10 +325,10 @@ jobs:
           }
           EOF
 
-
-      # ==========================================
+      # ------------------------------------------
       # BUILD
-      # ==========================================
+      # ------------------------------------------
+
       - name: Build APK
         run: |
           set -e
@@ -484,10 +339,10 @@ jobs:
             --no-daemon \
             --stacktrace
 
+      # ------------------------------------------
+      # SIGN
+      # ------------------------------------------
 
-      # ==========================================
-      # SIGN APK
-      # ==========================================
       - name: Sign APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -499,8 +354,6 @@ jobs:
           test -f "$APK"
           test -f "$KS_PATH"
 
-          echo "Signing APK..."
-
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign \
             --ks "$KS_PATH" \
             --ks-key-alias "$KS_ALIAS" \
@@ -508,35 +361,28 @@ jobs:
             --out "$RUNNER_TEMP/berlions-signed.apk" \
             "$APK"
 
-          echo "APK signed successfully."
+      # ------------------------------------------
+      # VERIFY
+      # ------------------------------------------
 
-
-      # ==========================================
-      # VERIFY APK
-      # ==========================================
       - name: Verify APK
         run: |
           set -e
 
           APK="$RUNNER_TEMP/berlions-signed.apk"
 
-          test -f "$APK"
-
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
             --verbose \
             "$APK"
-
-          echo ""
-          echo "APK certificate:"
 
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
             --print-certs \
             "$APK"
 
+      # ------------------------------------------
+      # ARTIFACT
+      # ------------------------------------------
 
-      # ==========================================
-      # UPLOAD
-      # ==========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
