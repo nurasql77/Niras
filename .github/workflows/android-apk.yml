@@ -466,14 +466,16 @@ jobs:
         run: |
           set -e
           python3 - << 'PYEOF'
+          import re
           p = "PORT/MAC/src/mac_sdl_runtime.cpp"
           s = open(p, encoding="utf-8").read()
-          needle = "MobileTouchCursorHidden = false;"
-          assert s.count(needle) == 2, "unexpected cursor code: %d" % s.count(needle)
-          s = s.replace(needle, "MobileTouchCursorHidden = true;")
-          open(p, "w", encoding="utf-8").write(s)
+          s2 = re.sub(r'MobileTouchCursorHidden\s*=\s*false', 'MobileTouchCursorHidden = true', s)
+          open(p, "w", encoding="utf-8").write(s2)
+          print("Direct touch applied")
+          for i, line in enumerate(s2.splitlines(), 1):
+              if "MobileTouchCursorHidden" in line:
+                  print(f"{i}: {line.strip()}")
           PYEOF
-          grep -n "MobileTouchCursorHidden = " PORT/MAC/src/mac_sdl_runtime.cpp
 
       - name: Add touch controls
         if: ${{ inputs.controls == 'true' }}
@@ -485,14 +487,10 @@ jobs:
           package com.raport.redalert;
 
           import android.app.Activity;
-          import android.content.res.ColorStateList;
           import android.graphics.Color;
-          import android.graphics.Typeface;
           import android.graphics.drawable.GradientDrawable;
-          import android.graphics.drawable.RippleDrawable;
-          import android.os.Handler;
-          import android.os.Looper;
           import android.os.SystemClock;
+          import android.util.Log;
           import android.util.TypedValue;
           import android.view.Gravity;
           import android.view.InputDevice;
@@ -501,178 +499,123 @@ jobs:
           import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
-          import android.widget.Button;
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
-          import android.widget.RelativeLayout;
+          import android.widget.TextView;
 
-          public final class TouchControls {
+          final class TouchControls {
+              private static final String TAG = "TouchControls";
               private final Activity activity;
-              private final Handler handler = new Handler(Looper.getMainLooper());
-              private final boolean ru;
-              private View pad;
-              private View actions;
-              private boolean hudVisible = true;
-              private Runnable repeat;
+              private final FrameLayout panel;
 
-              public static void attach(Activity activity) {
+              static void attach(Activity activity) {
                   try { new TouchControls(activity); }
-                  catch (Throwable t) { android.util.Log.e("TouchControls", "attach failed", t); }
+                  catch (Throwable t) { Log.e(TAG, "attach failed", t); }
               }
 
               private TouchControls(Activity a) {
-                  this.activity = a;
-                  String lang = a.getResources().getConfiguration().locale.getLanguage();
-                  this.ru = "ru".equals(lang) || "kk".equals(lang);
-
+                  activity = a;
                   FrameLayout root = new FrameLayout(a);
-                  RelativeLayout layer = new RelativeLayout(a);
-                  root.addView(layer, new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  panel = new FrameLayout(a);
+                  root.addView(panel, new FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-                  LinearLayout bottom = new LinearLayout(a);
-                  bottom.setGravity(Gravity.CENTER);
-                  RelativeLayout.LayoutParams bp = new RelativeLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
-                  bp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                  bp.addRule(RelativeLayout.CENTER_HORIZONTAL);
-                  bp.bottomMargin = dp(8);
-                  layer.addView(bottom, bp);
-                  this.actions = bottom;
+                  int cell = dp(52);
+                  int gap = dp(4);
+                  int left = dp(28);
+                  int bottom = dp(12);
+                  int top = dp(12);
 
-                  addCmd(bottom, ru ? "Все" : "All", KeyEvent.KEYCODE_E);
-                  addCmd(bottom, ru ? "Стоп" : "Stop", KeyEvent.KEYCODE_S);
-                  addCmd(bottom, ru ? "Охрана" : "Guard", KeyEvent.KEYCODE_G);
-                  addCmd(bottom, ru ? "Отмена" : "Cancel", KeyEvent.KEYCODE_ESCAPE);
+                  panel.addView(makeKeyButton("Меню", KeyEvent.KEYCODE_ESCAPE, 13),
+                      params(dp(72), cell, Gravity.TOP | Gravity.START, left, top, 0, 0));
 
-                  LinearLayout top = new LinearLayout(a);
-                  RelativeLayout.LayoutParams tp = new RelativeLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
-                  tp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-                  tp.addRule(RelativeLayout.ALIGN_PARENT_START);
-                  tp.topMargin = dp(16);
-                  tp.leftMargin = dp(8);
-                  layer.addView(top, tp);
-
-                  addCmd(top, ru ? "Меню" : "Menu", KeyEvent.KEYCODE_ESCAPE);
-
-                  Button hud = makeBtn("HUD");
-                  hud.setOnClickListener(v -> {
-                      hudVisible = !hudVisible;
-                      int vis = hudVisible ? View.VISIBLE : View.GONE;
-                      if (pad != null) pad.setVisibility(vis);
-                      if (actions != null) actions.setVisibility(vis);
+                  TextView hud = makeButton("HUD", 13);
+                  hud.setOnTouchListener((v, e) -> {
+                      if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                          panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                      }
+                      return true;
                   });
-                  top.addView(hud, btnLp());
+                  root.addView(hud, params(dp(60), cell, Gravity.TOP | Gravity.START,
+                      left + dp(72) + gap * 2, top, 0, 0));
 
-                  LinearLayout dpad = new LinearLayout(a);
-                  dpad.setOrientation(LinearLayout.VERTICAL);
-                  RelativeLayout.LayoutParams dpLp = new RelativeLayout.LayoutParams(dp(150), dp(150));
-                  dpLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                  dpLp.addRule(RelativeLayout.ALIGN_PARENT_START);
-                  dpLp.leftMargin = dp(8);
-                  dpLp.bottomMargin = dp(8);
-                  layer.addView(dpad, dpLp);
-                  this.pad = dpad;
+                  panel.addView(makeKeyButton("◀", KeyEvent.KEYCODE_DPAD_LEFT, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left, 0, 0, bottom));
+                  panel.addView(makeKeyButton("▼", KeyEvent.KEYCODE_DPAD_DOWN, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom));
+                  panel.addView(makeKeyButton("▶", KeyEvent.KEYCODE_DPAD_RIGHT, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + 2 * (cell + gap), 0, 0, bottom));
+                  panel.addView(makeKeyButton("▲", KeyEvent.KEYCODE_DPAD_UP, 20),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom + cell + gap));
 
-                  LinearLayout rowUp = new LinearLayout(a);
-                  rowUp.setGravity(Gravity.CENTER);
-                  dpad.addView(rowUp);
-                  addPad(rowUp, "▲", KeyEvent.KEYCODE_DPAD_UP);
+                  LinearLayout row = new LinearLayout(a);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  int w = dp(66);
+                  row.addView(makeKeyButton("Все", KeyEvent.KEYCODE_E, 13), rowParams(w, cell, gap));
+                  row.addView(makeKeyButton("Стоп", KeyEvent.KEYCODE_S, 13), rowParams(w, cell, gap));
+                  row.addView(makeKeyButton("Охрана", KeyEvent.KEYCODE_G, 13), rowParams(w, cell, gap));
+                  row.addView(makeKeyButton("Отмена", KeyEvent.KEYCODE_ESCAPE, 13), rowParams(w, cell, gap));
 
-                  LinearLayout rowMid = new LinearLayout(a);
-                  rowMid.setGravity(Gravity.CENTER);
-                  dpad.addView(rowMid);
-                  addPad(rowMid, "◀", KeyEvent.KEYCODE_DPAD_LEFT);
-                  addPad(rowMid, "▼", KeyEvent.KEYCODE_DPAD_DOWN);
-                  addPad(rowMid, "▶", KeyEvent.KEYCODE_DPAD_RIGHT);
+                  int screenW = a.getResources().getDisplayMetrics().widthPixels;
+                  panel.addView(row, params(ViewGroup.LayoutParams.WRAP_CONTENT, cell,
+                      Gravity.BOTTOM | Gravity.START, (int) (screenW * 0.36f), 0, 0, bottom));
 
                   a.addContentView(root, new ViewGroup.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
               }
 
-              private void addCmd(LinearLayout parent, String label, int keyCode) {
-                  Button b = makeBtn(label);
+              private TextView makeKeyButton(String label, final int keyCode, int sp) {
+                  TextView b = makeButton(label, sp);
                   b.setOnTouchListener((v, e) -> {
-                      int act = e.getActionMasked();
-                      if (act == MotionEvent.ACTION_DOWN) { v.setPressed(true); pulse(keyCode); return true; }
-                      if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) { v.setPressed(false); return true; }
-                      return true;
-                  });
-                  parent.addView(b, btnLp());
-              }
-
-              private void addPad(LinearLayout parent, String label, final int keyCode) {
-                  Button b = makeBtn(label);
-                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-                  b.setOnTouchListener((v, e) -> {
-                      int act = e.getActionMasked();
-                      if (act == MotionEvent.ACTION_DOWN) {
-                          stopRepeat();
-                          v.setPressed(true);
-                          Runnable r = new Runnable() {
-                              @Override public void run() {
-                                  if (repeat != this) return;
-                                  pulse(keyCode);
-                                  handler.postDelayed(this, 85);
-                              }
-                          };
-                          repeat = r;
-                          r.run();
-                          return true;
-                      }
-                      if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
-                          stopRepeat(); v.setPressed(false); return true;
-                      }
-                      if (act == MotionEvent.ACTION_MOVE) {
-                          if (e.getX() < 0 || e.getY() < 0 || e.getX() >= v.getWidth() || e.getY() >= v.getHeight()) {
-                              stopRepeat(); v.setPressed(false);
-                          }
-                          return true;
+                      int action = e.getAction();
+                      if (action == MotionEvent.ACTION_DOWN) {
+                          v.setAlpha(0.6f);
+                          sendKey(keyCode, true);
+                      } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                          v.setAlpha(1f);
+                          sendKey(keyCode, false);
                       }
                       return true;
                   });
-                  parent.addView(b, btnLp());
-              }
-
-              private void pulse(int keyCode) {
-                  long t = SystemClock.uptimeMillis();
-                  activity.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, keyCode, 0, 0,
-                          KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
-                  activity.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, keyCode, 0, 0,
-                          KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
-              }
-
-              private void stopRepeat() {
-                  if (repeat != null) { handler.removeCallbacks(repeat); repeat = null; }
-              }
-
-              private Button makeBtn(String text) {
-                  Button b = new Button(activity);
-                  b.setText(text);
-                  b.setAllCaps(false);
-                  b.setTextColor(Color.WHITE);
-                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-                  b.setTypeface(Typeface.DEFAULT_BOLD);
-                  b.setPadding(dp(10), dp(6), dp(10), dp(6));
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xCC1A1F26);
-                  bg.setCornerRadius(dp(10));
-                  bg.setStroke(dp(1), 0x66FFFFFF);
-                  b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), bg, null));
                   return b;
               }
 
-              private LinearLayout.LayoutParams btnLp() {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
-                  p.setMargins(dp(4), dp(2), dp(4), dp(2));
+              private TextView makeButton(String label, int sp) {
+                  TextView b = new TextView(activity);
+                  b.setText(label);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  b.setGravity(Gravity.CENTER);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xB3141A1F);
+                  bg.setCornerRadius(dp(10));
+                  b.setBackground(bg);
+                  return b;
+              }
+
+              private void sendKey(int keyCode, boolean down) {
+                  long t = SystemClock.uptimeMillis();
+                  activity.dispatchKeyEvent(new KeyEvent(t, t,
+                      down ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, 0, 0,
+                      KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+              }
+
+              private int dp(int value) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
+                      activity.getResources().getDisplayMetrics());
+              }
+
+              private static FrameLayout.LayoutParams params(int w, int h, int gravity,
+                                                             int l, int t, int r, int b) {
+                  FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
+                  p.setMargins(l, t, r, b);
                   return p;
               }
 
-              private int dp(int v) {
-                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
-                          activity.getResources().getDisplayMetrics());
+              private static LinearLayout.LayoutParams rowParams(int w, int h, int gap) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+                  p.setMargins(gap, 0, gap, 0);
+                  return p;
               }
           }
           JAVAEOF
