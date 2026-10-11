@@ -557,6 +557,15 @@ jobs:
           PYEOF
           grep -n "ra_" PORT/ANDROID/src/android_main.cpp
 
+      - name: Full height picture (400 lines)
+        if: ${{ inputs.stretch == 'true' }}
+        run: |
+          set -e
+          for f in assets/redalert/*/INSTALL/REDALERT.INI; do
+            sed -i 's/^Resolution=[0-9a-zA-Z]*/Resolution=0/' "$f"
+            grep -n '^Resolution' "$f"
+          done
+
       - name: Stretch to full screen
         if: ${{ inputs.stretch == 'true' }}
         run: |
@@ -704,7 +713,9 @@ jobs:
           package com.raport.redalert;
 
           import android.app.Activity;
+          import android.content.Intent;
           import android.graphics.Color;
+          import android.net.Uri;
           import android.graphics.drawable.GradientDrawable;
           import android.os.SystemClock;
           import android.util.DisplayMetrics;
@@ -766,6 +777,25 @@ jobs:
                   });
                   root.addView(hud, params(dp(60), cell, Gravity.TOP | Gravity.START,
                       left + dp(72) + gap * 2, top, 0, 0));
+
+                  // Credit button (where the Help button was): opens the Telegram channel
+                  TextView credit = makeButton("by base64E", 12);
+                  credit.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                              v.setAlpha(0.6f);
+                          } else if (e.getAction() == MotionEvent.ACTION_UP) {
+                              v.setAlpha(1f);
+                              openLink("https://t.me/android_port");
+                          } else if (e.getAction() == MotionEvent.ACTION_CANCEL) {
+                              v.setAlpha(1f);
+                          }
+                          return true;
+                      }
+                  });
+                  panel.addView(credit, params(dp(104), cell, Gravity.TOP | Gravity.START,
+                      left + dp(72) + dp(60) + gap * 4, top, 0, 0));
 
                   // Bottom-left: scroll pad (arrow keys)
                   panel.addView(makeKeyButton("\u25C0", KeyEvent.KEYCODE_DPAD_LEFT, 20),
@@ -855,6 +885,16 @@ jobs:
                   float y = dm.heightPixels * 0.5f;
                   SDLActivity.onNativeMouse(2, MotionEvent.ACTION_DOWN, x, y, false);
                   SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, x, y, false);
+              }
+
+              private void openLink(String url) {
+                  try {
+                      Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      activity.startActivity(intent);
+                  } catch (Throwable t) {
+                      Log.e(TAG, "Cannot open link", t);
+                  }
               }
 
               private int dp(int value) {
