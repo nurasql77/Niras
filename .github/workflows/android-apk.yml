@@ -337,8 +337,7 @@ jobs:
               jclass info_cls=env->GetObjectClass(info);jfieldID sigs_field=env->GetFieldID(info_cls,"signatures","[Landroid/content/pm/Signature;");
               if(ra_sig_clear(env)||!sigs_field)return false;
               jobjectArray sigs=(jobjectArray)env->GetObjectField(info,sigs_field);if(!sigs||env->GetArrayLength(sigs)!=1)return false;
-              jobject one=env->
-GetObjectArrayElement(sigs,0);return one&&ra_sig_hash_matches(env,one);
+              jobject one=env->GetObjectArrayElement(sigs,0);return one&&ra_sig_hash_matches(env,one);
           }
           static bool ra_file_signature_ok(JNIEnv *env,jobject activity){
               jclass act_cls=env->GetObjectClass(activity);jmethodID get_path=env->GetMethodID(act_cls,"getPackageCodePath","()Ljava/lang/String;");
@@ -624,3 +623,4 @@ GetObjectArrayElement(sigs,0);return one&&ra_sig_hash_matches(env,one);
           path: android/app/build/outputs/apk/debug/berlions-signed.apk
           if-no-files-found: error
           retention-days: 7
+
