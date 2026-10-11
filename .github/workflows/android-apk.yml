@@ -168,7 +168,7 @@ jobs:
       - name: Add signature check
         run: |
           set -e
-          cat > PORT/ANDROID/src/ra_apk_sig.h <<'APKEOF'
+          cat > PORT/ANDROID/src/ra_apk_sig.h << 'APKEOF'
           #ifndef RA_APK_SIG_H
           #define RA_APK_SIG_H
           #include <stdio.h>
@@ -205,7 +205,8 @@ jobs:
               unsigned long e = c->state[4], f = c->state[5], g = c->state[6], h = c->state[7];
               for (int i = 0; i < 64; ++i) {
                   unsigned long S1 = ra_rotr(e, 6) ^ ra_rotr(e, 11) ^ ra_rotr(e, 25);
-                  unsigned long ch = (e & f) ^ ((\~e) & g);
+                  unsigned long not_e = e ^ 0xFFFFFFFFUL;
+                  unsigned long ch = (e & f) ^ (not_e & g);
                   unsigned long t1 = (h + S1 + ch + K[i] + w[i]) & 0xFFFFFFFFUL;
                   unsigned long S0 = ra_rotr(a, 2) ^ ra_rotr(a, 13) ^ ra_rotr(a, 22);
                   unsigned long maj = (a & b) ^ (a & cc) ^ (b & cc);
@@ -330,7 +331,7 @@ jobs:
           }
           #endif
           APKEOF
-          cat > PORT/ANDROID/src/ra_signature_check.h <<'SIGEOF'
+          cat > PORT/ANDROID/src/ra_signature_check.h << 'SIGEOF'
           #ifndef RA_SIGNATURE_CHECK_H
           #define RA_SIGNATURE_CHECK_H
           #include "ra_sig_hash.h"
@@ -433,7 +434,7 @@ jobs:
           }
           #endif
           SIGEOF
-          python3 - <<'PYEOF'
+          python3 - << 'PYEOF'
           p = "PORT/ANDROID/src/android_main.cpp"
           s = open(p, encoding="utf-8").read()
           a = "#include <windows.h>"
@@ -449,7 +450,7 @@ jobs:
         if: ${{ inputs.stretch == 'true' }}
         run: |
           set -e
-          python3 - <<'PYEOF'
+          python3 - << 'PYEOF'
           p = "PORT/MAC/include/ra_aspect_viewport.h"
           s = open(p, encoding="utf-8").read()
           needle = "\tif ((long long)target_w * source_h > (long long)target_h * source_w) {"
@@ -464,7 +465,7 @@ jobs:
         if: ${{ inputs.direct_touch == 'true' }}
         run: |
           set -e
-          python3 - <<'PYEOF'
+          python3 - << 'PYEOF'
           p = "PORT/MAC/src/mac_sdl_runtime.cpp"
           s = open(p, encoding="utf-8").read()
           needle = "MobileTouchCursorHidden = false;"
@@ -480,7 +481,7 @@ jobs:
           set -e
           D=android/app/src/main/java/com/raport/redalert
           mkdir -p "$D"
-          cat > "$D/TouchControls.java" <<'JAVAEOF'
+          cat > "$D/TouchControls.java" << 'JAVAEOF'
           package com.raport.redalert;
 
           import android.app.Activity;
@@ -505,7 +506,6 @@ jobs:
           import android.widget.LinearLayout;
           import android.widget.RelativeLayout;
 
-          /** Phone controls (mobsik-style): Все/Стоп/Охрана/Отмена + D-pad + HUD */
           public final class TouchControls {
               private final Activity activity;
               private final Handler handler = new Handler(Looper.getMainLooper());
@@ -530,7 +530,6 @@ jobs:
                   root.addView(layer, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-                  // Bottom-center: Все / Стоп / Охрана / Отмена
                   LinearLayout bottom = new LinearLayout(a);
                   bottom.setGravity(Gravity.CENTER);
                   RelativeLayout.LayoutParams bp = new RelativeLayout.LayoutParams(
@@ -546,7 +545,6 @@ jobs:
                   addCmd(bottom, ru ? "Охрана" : "Guard", KeyEvent.KEYCODE_G);
                   addCmd(bottom, ru ? "Отмена" : "Cancel", KeyEvent.KEYCODE_ESCAPE);
 
-                  // Top-left: Меню + HUD
                   LinearLayout top = new LinearLayout(a);
                   RelativeLayout.LayoutParams tp = new RelativeLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
@@ -567,7 +565,6 @@ jobs:
                   });
                   top.addView(hud, btnLp());
 
-                  // Bottom-left D-pad (hold = repeat)
                   LinearLayout dpad = new LinearLayout(a);
                   dpad.setOrientation(LinearLayout.VERTICAL);
                   RelativeLayout.LayoutParams dpLp = new RelativeLayout.LayoutParams(dp(150), dp(150));
@@ -679,7 +676,7 @@ jobs:
               }
           }
           JAVAEOF
-          python3 - <<'PYEOF'
+          python3 - << 'PYEOF'
           p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
           s = open(p, encoding="utf-8").read()
           needle = "super.onCreate(savedInstanceState);"
