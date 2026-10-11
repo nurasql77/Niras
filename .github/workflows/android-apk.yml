@@ -35,16 +35,16 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # Checkout
-      # --------------------------------------------------
+      # ==========================================
+      # CHECKOUT
+      # ==========================================
       - name: Checkout
         uses: actions/checkout@v4
 
 
-      # --------------------------------------------------
-      # Java
-      # --------------------------------------------------
+      # ==========================================
+      # JAVA
+      # ==========================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -53,20 +53,22 @@ jobs:
           cache: gradle
 
 
-      # --------------------------------------------------
-      # Android SDK
-      # --------------------------------------------------
+      # ==========================================
+      # ANDROID SDK
+      # ==========================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
 
 
-      # --------------------------------------------------
-      # Android packages
-      # --------------------------------------------------
+      # ==========================================
+      # SDK / NDK / CMAKE
+      # ==========================================
       - name: Install Android SDK packages
         run: |
+          set -e
+
           sdkmanager --install \
             "platforms;android-36" \
             "build-tools;36.0.0" \
@@ -76,18 +78,18 @@ jobs:
           yes | sdkmanager --licenses || true
 
 
-      # --------------------------------------------------
-      # Gradle
-      # --------------------------------------------------
+      # ==========================================
+      # GRADLE
+      # ==========================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
 
-      # --------------------------------------------------
-      # Download Red Alert data
-      # --------------------------------------------------
+      # ==========================================
+      # GAME DATA
+      # ==========================================
       - name: Download game data
         env:
           FILE_ID: ${{ inputs.drive_file_id }}
@@ -126,9 +128,9 @@ jobs:
           du -sh assets/redalert
 
 
-      # --------------------------------------------------
-      # Download SDL2
-      # --------------------------------------------------
+      # ==========================================
+      # SDL2
+      # ==========================================
       - name: Download SDL2
         run: |
           set -e
@@ -147,9 +149,9 @@ jobs:
             android/third_party/SDL
 
 
-      # --------------------------------------------------
-      # Check project
-      # --------------------------------------------------
+      # ==========================================
+      # PROJECT CHECK
+      # ==========================================
       - name: Check project
         run: |
           set -e
@@ -162,9 +164,9 @@ jobs:
           echo "Project structure OK"
 
 
-      # --------------------------------------------------
-      # Set application name
-      # --------------------------------------------------
+      # ==========================================
+      # APP NAME
+      # ==========================================
       - name: Set application name
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -179,20 +181,21 @@ jobs:
             android/app/src/main/AndroidManifest.xml
 
 
-      # --------------------------------------------------
+      # ==========================================
       # CHECK KEYSTORE
-      # --------------------------------------------------
+      # ==========================================
       - name: Check signing key
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          set -e
+          set -u
 
           echo "======================================"
           echo "CHECKING SIGNING KEY"
           echo "======================================"
 
+          echo ""
           echo "1. Checking secrets..."
 
           if [ -z "$KEYSTORE_B64" ]; then
@@ -210,7 +213,17 @@ jobs:
 
 
           echo ""
-          echo "2. Checking Base64 length..."
+          echo "2. Java environment..."
+
+          java -version
+
+          echo ""
+          echo "keytool location:"
+          command -v keytool
+
+
+          echo ""
+          echo "3. Base64 length..."
 
           B64_LENGTH=$(printf '%s' "$KEYSTORE_B64" | wc -c)
 
@@ -223,38 +236,76 @@ jobs:
 
 
           echo ""
-          echo "3. Decoding PKCS12..."
+          echo "4. Decoding PKCS12..."
 
           KS="$RUNNER_TEMP/release.p12"
 
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          if ! printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"; then
+            echo "ERROR: Base64 decoding failed"
+            exit 1
+          fi
 
 
           echo ""
-          echo "4. Checking decoded file..."
+          echo "5. Checking decoded file..."
 
           if [ ! -s "$KS" ]; then
             echo "ERROR: decoded keystore is empty"
             exit 1
           fi
 
+          ls -lh "$KS"
+
+          file "$KS"
+
           KS_SIZE=$(stat -c%s "$KS")
 
           echo "Keystore size: ${KS_SIZE} bytes"
 
-          file "$KS"
+
+          echo ""
+          echo "6. SHA-256 of decoded keystore..."
+
+          SHA256=$(sha256sum "$KS" | awk '{print $1}')
+
+          echo "Keystore SHA-256:"
+          echo "$SHA256"
 
 
           echo ""
-          echo "5. Checking PKCS12 with keytool..."
+          echo "7. Testing PKCS12..."
 
-          if ! keytool -list \
+          set +e
+
+          keytool -list \
+            -v \
             -keystore "$KS" \
             -storetype PKCS12 \
             -storepass "$KEYSTORE_PASSWORD" \
-            > /tmp/keytool-output.txt \
-            2> /tmp/keytool-error.txt
-          then
+            > "$RUNNER_TEMP/keytool.out" \
+            2> "$RUNNER_TEMP/keytool.err"
+
+          RESULT=$?
+
+          set -e
+
+          echo ""
+          echo "keytool exit code: $RESULT"
+
+
+          echo ""
+          echo "----- keytool stdout -----"
+
+          cat "$RUNNER_TEMP/keytool.out" || true
+
+
+          echo ""
+          echo "----- keytool stderr -----"
+
+          cat "$RUNNER_TEMP/keytool.err" || true
+
+
+          if [ "$RESULT" -ne 0 ]; then
 
             echo ""
             echo "======================================"
@@ -262,38 +313,28 @@ jobs:
             echo "======================================"
 
             echo ""
-            echo "keytool error:"
-
-            cat /tmp/keytool-error.txt
+            echo "Decoded file SHA-256:"
+            echo "$SHA256"
 
             echo ""
             echo "Possible causes:"
-            echo "1. KEYSTORE_PASSWORD does not match this PKCS12 file."
-            echo "2. KEYSTORE_B64 belongs to another .p12 file."
+            echo "1. KEYSTORE_PASSWORD does not match this PKCS12."
+            echo "2. KEYSTORE_B64 belongs to another .p12."
             echo "3. KEYSTORE_B64 is incomplete."
-            echo "4. The decoded file is not a valid PKCS12 keystore."
+            echo "4. The .p12 file is corrupted."
+            echo "5. The file is not a valid PKCS12 keystore."
 
-            echo ""
-            echo "Safe diagnostic SHA256:"
-
-            sha256sum "$KS"
-
-            exit 1
+            exit "$RESULT"
           fi
 
 
           echo ""
-          echo "6. Keystore contents:"
-
-          cat /tmp/keytool-output.txt
-
-
-          echo ""
-          echo "7. Searching for PrivateKeyEntry..."
+          echo "8. Searching for PrivateKeyEntry..."
 
           ALIAS=$(awk -F, \
             '/PrivateKeyEntry/ {print $1; exit}' \
-            /tmp/keytool-output.txt)
+            "$RUNNER_TEMP/keytool.out")
+
 
           if [ -z "$ALIAS" ]; then
             echo "ERROR: No PrivateKeyEntry found"
@@ -305,13 +346,15 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "SUCCESS: KEYSTORE IS VALID"
+          echo "KEYSTORE IS VALID"
+          echo "PASSWORD IS CORRECT"
+          echo "PRIVATE KEY FOUND"
           echo "======================================"
 
 
-      # --------------------------------------------------
-      # Prepare signing key
-      # --------------------------------------------------
+      # ==========================================
+      # PREPARE SIGNING KEY
+      # ==========================================
       - name: Prepare signing key
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -354,9 +397,9 @@ jobs:
           echo "Certificate SHA-256: $FP"
 
 
-      # --------------------------------------------------
-      # Touch controls
-      # --------------------------------------------------
+      # ==========================================
+      # TOUCH CONTROLS
+      # ==========================================
       - name: Add touch controls
         if: ${{ inputs.controls == 'true' }}
         run: |
@@ -368,9 +411,6 @@ jobs:
           package com.ra.port;
 
           import android.app.Activity;
-          import android.view.View;
-          import android.view.MotionEvent;
-          import android.graphics.Color;
           import android.widget.FrameLayout;
           import android.widget.Button;
 
@@ -396,58 +436,44 @@ jobs:
                   Button action = new Button(activity);
                   action.setText("A");
 
-                  FrameLayout.LayoutParams lp =
+                  FrameLayout.LayoutParams leftLp =
                       new FrameLayout.LayoutParams(180, 180);
+                  leftLp.leftMargin = 30;
+                  leftLp.topMargin = 100;
 
-                  lp.leftMargin = 30;
-                  lp.topMargin = 30;
-
-                  root.addView(left, lp);
-
-                  FrameLayout.LayoutParams rp =
+                  FrameLayout.LayoutParams rightLp =
                       new FrameLayout.LayoutParams(180, 180);
-
-                  rp.leftMargin = 220;
-                  rp.topMargin = 30;
-
-                  root.addView(right, rp);
+                  rightLp.leftMargin = 220;
+                  rightLp.topMargin = 100;
 
                   FrameLayout.LayoutParams upLp =
                       new FrameLayout.LayoutParams(180, 180);
-
                   upLp.leftMargin = 125;
-                  upLp.topMargin = 30;
-
-                  root.addView(up, upLp);
+                  upLp.topMargin = 0;
 
                   FrameLayout.LayoutParams downLp =
                       new FrameLayout.LayoutParams(180, 180);
-
                   downLp.leftMargin = 125;
-                  downLp.topMargin = 220;
-
-                  root.addView(down, downLp);
+                  downLp.topMargin = 200;
 
                   FrameLayout.LayoutParams actionLp =
                       new FrameLayout.LayoutParams(200, 200);
-
                   actionLp.leftMargin = 850;
-                  actionLp.topMargin = 250;
+                  actionLp.topMargin = 200;
 
+                  root.addView(left, leftLp);
+                  root.addView(right, rightLp);
+                  root.addView(up, upLp);
+                  root.addView(down, downLp);
                   root.addView(action, actionLp);
               }
           }
           EOF
 
-          sed -i \
-            '/setContentView/a\
-            com.ra.port.TouchControls.attach(this);' \
-            android/app/src/main/java/com/ra/port/MainActivity.java || true
 
-
-      # --------------------------------------------------
-      # Build APK
-      # --------------------------------------------------
+      # ==========================================
+      # BUILD
+      # ==========================================
       - name: Build APK
         run: |
           set -e
@@ -459,9 +485,9 @@ jobs:
             --stacktrace
 
 
-      # --------------------------------------------------
-      # Sign APK
-      # --------------------------------------------------
+      # ==========================================
+      # SIGN APK
+      # ==========================================
       - name: Sign APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -485,30 +511,32 @@ jobs:
           echo "APK signed successfully."
 
 
-      # --------------------------------------------------
-      # Verify APK
-      # --------------------------------------------------
+      # ==========================================
+      # VERIFY APK
+      # ==========================================
       - name: Verify APK
         run: |
           set -e
 
           APK="$RUNNER_TEMP/berlions-signed.apk"
 
+          test -f "$APK"
+
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
             --verbose \
             "$APK"
 
           echo ""
-          echo "APK certificate SHA-256:"
+          echo "APK certificate:"
 
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
             --print-certs \
             "$APK"
 
 
-      # --------------------------------------------------
-      # Upload APK
-      # --------------------------------------------------
+      # ==========================================
+      # UPLOAD
+      # ==========================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
