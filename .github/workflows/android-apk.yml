@@ -171,30 +171,19 @@ jobs:
           cat > PORT/ANDROID/src/ra_apk_sig.h <<'APKEOF'
           #ifndef RA_APK_SIG_H
           #define RA_APK_SIG_H
-
-          /* Reads the signing certificate straight from the APK file (v2/v3 signing block),
-           * independent of PackageManager. Pure C++98, no Android dependencies. */
-
           #include <stdio.h>
           #include <stdlib.h>
           #include <string.h>
-
-          /* ---------------- SHA-256 ---------------- */
-
           struct RaSha256 {
               unsigned long state[8];
               unsigned long long length;
               unsigned char buffer[64];
               unsigned int used;
           };
-
-          static inline unsigned long ra_rotr(unsigned long x, unsigned int n)
-          {
+          static inline unsigned long ra_rotr(unsigned long x, unsigned int n) {
               return ((x >> n) | (x << (32 - n))) & 0xFFFFFFFFUL;
           }
-
-          static void ra_sha256_block(RaSha256 *c, unsigned char const *p)
-          {
+          static void ra_sha256_block(RaSha256 *c, unsigned char const *p) {
               static unsigned long const K[64] = {
                   0x428a2f98UL,0x71374491UL,0xb5c0fbcfUL,0xe9b5dba5UL,0x3956c25bUL,0x59f111f1UL,0x923f82a4UL,0xab1c5ed5UL,
                   0xd807aa98UL,0x12835b01UL,0x243185beUL,0x550c7dc3UL,0x72be5d74UL,0x80deb1feUL,0x9bdc06a7UL,0xc19bf174UL,
@@ -205,10 +194,8 @@ jobs:
                   0x19a4c116UL,0x1e376c08UL,0x2748774cUL,0x34b0bcb5UL,0x391c0cb3UL,0x4ed8aa4aUL,0x5b9cca4fUL,0x682e6ff3UL,
                   0x748f82eeUL,0x78a5636fUL,0x84c87814UL,0x8cc70208UL,0x90befffaUL,0xa4506cebUL,0xbef9a3f7UL,0xc67178f2UL };
               unsigned long w[64];
-              for (int i = 0; i < 16; ++i) {
-                  w[i] = ((unsigned long)p[i*4] << 24) | ((unsigned long)p[i*4+1] << 16) |
-                         ((unsigned long)p[i*4+2] << 8) | (unsigned long)p[i*4+3];
-              }
+              for (int i = 0; i < 16; ++i)
+                  w[i] = ((unsigned long)p[i*4] << 24) | ((unsigned long)p[i*4+1] << 16) | ((unsigned long)p[i*4+2] << 8) | (unsigned long)p[i*4+3];
               for (int i = 16; i < 64; ++i) {
                   unsigned long s0 = ra_rotr(w[i-15], 7) ^ ra_rotr(w[i-15], 18) ^ (w[i-15] >> 3);
                   unsigned long s1 = ra_rotr(w[i-2], 17) ^ ra_rotr(w[i-2], 19) ^ (w[i-2] >> 10);
@@ -218,7 +205,7 @@ jobs:
               unsigned long e = c->state[4], f = c->state[5], g = c->state[6], h = c->state[7];
               for (int i = 0; i < 64; ++i) {
                   unsigned long S1 = ra_rotr(e, 6) ^ ra_rotr(e, 11) ^ ra_rotr(e, 25);
-                  unsigned long ch = (e & f) ^ ((~e) & g);
+                  unsigned long ch = (e & f) ^ ((\~e) & g);
                   unsigned long t1 = (h + S1 + ch + K[i] + w[i]) & 0xFFFFFFFFUL;
                   unsigned long S0 = ra_rotr(a, 2) ^ ra_rotr(a, 13) ^ ra_rotr(a, 22);
                   unsigned long maj = (a & b) ^ (a & cc) ^ (b & cc);
@@ -231,109 +218,72 @@ jobs:
               c->state[4] = (c->state[4] + e) & 0xFFFFFFFFUL; c->state[5] = (c->state[5] + f) & 0xFFFFFFFFUL;
               c->state[6] = (c->state[6] + g) & 0xFFFFFFFFUL; c->state[7] = (c->state[7] + h) & 0xFFFFFFFFUL;
           }
-
-          static void ra_sha256_init(RaSha256 *c)
-          {
+          static void ra_sha256_init(RaSha256 *c) {
               c->state[0] = 0x6a09e667UL; c->state[1] = 0xbb67ae85UL; c->state[2] = 0x3c6ef372UL; c->state[3] = 0xa54ff53aUL;
               c->state[4] = 0x510e527fUL; c->state[5] = 0x9b05688cUL; c->state[6] = 0x1f83d9abUL; c->state[7] = 0x5be0cd19UL;
-              c->length = 0;
-              c->used = 0;
+              c->length = 0; c->used = 0;
           }
-
-          static void ra_sha256_update(RaSha256 *c, unsigned char const *data, size_t len)
-          {
+          static void ra_sha256_update(RaSha256 *c, unsigned char const *data, size_t len) {
               for (size_t i = 0; i < len; ++i) {
                   c->buffer[c->used++] = data[i];
-                  if (c->used == 64) {
-                      ra_sha256_block(c, c->buffer);
-                      c->used = 0;
-                  }
+                  if (c->used == 64) { ra_sha256_block(c, c->buffer); c->used = 0; }
               }
               c->length += (unsigned long long)len;
           }
-
-          static void ra_sha256_final(RaSha256 *c, char hex_out[65])
-          {
+          static void ra_sha256_final(RaSha256 *c, char hex_out[65]) {
               static char const *hex = "0123456789abcdef";
               unsigned long long bits = c->length * 8ULL;
               unsigned char pad = 0x80;
-              ra_sha256_update(c, &pad, 1);
-              pad = 0;
-              while (c->used != 56) {
-                  ra_sha256_update(c, &pad, 1);
-              }
+              ra_sha256_update(c, &pad, 1); pad = 0;
+              while (c->used != 56) ra_sha256_update(c, &pad, 1);
               unsigned char len_bytes[8];
-              for (int i = 0; i < 8; ++i) {
-                  len_bytes[i] = (unsigned char)((bits >> (56 - 8 * i)) & 0xFF);
-              }
+              for (int i = 0; i < 8; ++i) len_bytes[i] = (unsigned char)((bits >> (56 - 8 * i)) & 0xFF);
               ra_sha256_update(c, len_bytes, 8);
-              for (int i = 0; i < 8; ++i) {
+              for (int i = 0; i < 8; ++i)
                   for (int j = 0; j < 4; ++j) {
                       unsigned char b = (unsigned char)((c->state[i] >> (24 - 8 * j)) & 0xFF);
                       hex_out[i * 8 + j * 2] = hex[b >> 4];
                       hex_out[i * 8 + j * 2 + 1] = hex[b & 15];
                   }
-              }
               hex_out[64] = 0;
           }
-
-          /* ---------------- APK signing block ---------------- */
-
-          static unsigned long ra_u32(unsigned char const *p)
-          {
+          static unsigned long ra_u32(unsigned char const *p) {
               return (unsigned long)p[0] | ((unsigned long)p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
           }
-
-          static unsigned long long ra_u64(unsigned char const *p)
-          {
+          static unsigned long long ra_u64(unsigned char const *p) {
               return (unsigned long long)ra_u32(p) | ((unsigned long long)ra_u32(p + 4) << 32);
           }
-
-          /* On success writes the lowercase hex SHA-256 of the signer certificate and returns true.
-           * Fails (false) when the APK has no v2/v3 block or more than one signer. */
-          static bool ra_apk_cert_sha256(char const *path, char hex_out[65])
-          {
+          static bool ra_apk_cert_sha256(char const *path, char hex_out[65]) {
               FILE *f = fopen(path, "rb");
-              if (!f) {
-                  return false;
-              }
+              if (!f) return false;
               bool ok = false;
               unsigned char *block = 0;
               do {
                   if (fseek(f, 0, SEEK_END) != 0) break;
                   long file_size = ftell(f);
                   if (file_size < 22) break;
-
                   long tail_len = file_size < 65557L ? file_size : 65557L;
                   unsigned char *tail = (unsigned char *)malloc((size_t)tail_len);
                   if (!tail) break;
-                  bool tail_ok = fseek(f, file_size - tail_len, SEEK_SET) == 0 &&
-                      fread(tail, 1, (size_t)tail_len, f) == (size_t)tail_len;
+                  bool tail_ok = fseek(f, file_size - tail_len, SEEK_SET) == 0 && fread(tail, 1, (size_t)tail_len, f) == (size_t)tail_len;
                   long eocd = -1;
                   if (tail_ok) {
-                      for (long i = tail_len - 22; i >= 0; --i) {
-                          if (tail[i] == 0x50 && tail[i+1] == 0x4b && tail[i+2] == 0x05 && tail[i+3] == 0x06) {
-                              eocd = i;
-                              break;
-                          }
-                      }
+                      for (long i = tail_len - 22; i >= 0; --i)
+                          if (tail[i] == 0x50 && tail[i+1] == 0x4b && tail[i+2] == 0x05 && tail[i+3] == 0x06) { eocd = i; break; }
                   }
                   unsigned long cd_offset = eocd >= 0 ? ra_u32(tail + eocd + 16) : 0;
                   free(tail);
                   if (eocd < 0 || cd_offset < 32 || (long)cd_offset > file_size) break;
-
                   unsigned char footer[24];
                   if (fseek(f, (long)cd_offset - 24, SEEK_SET) != 0 || fread(footer, 1, 24, f) != 24) break;
                   if (memcmp(footer + 8, "APK Sig Block 42", 16) != 0) break;
                   unsigned long long block_size = ra_u64(footer);
                   if (block_size < 24 + 12 || block_size > 16ULL * 1024 * 1024 || block_size + 8 > cd_offset) break;
-
                   size_t pairs_len = (size_t)(block_size - 24);
                   block = (unsigned char *)malloc(pairs_len);
                   if (!block) break;
                   long pairs_start = (long)(cd_offset - block_size - 8 + 8);
                   if (fseek(f, pairs_start, SEEK_SET) != 0 || fread(block, 1, pairs_len, f) != pairs_len) break;
-
                   unsigned char const *value = 0;
                   size_t value_len = 0;
                   unsigned long found_id = 0;
@@ -343,27 +293,22 @@ jobs:
                       if (len < 4 || len > pairs_len - off - 8) break;
                       unsigned long id = ra_u32(block + off + 8);
                       if (id == 0xf05368c0UL || (id == 0x7109871aUL && found_id != 0xf05368c0UL)) {
-                          found_id = id;
-                          value = block + off + 12;
-                          value_len = (size_t)(len - 4);
+                          found_id = id; value = block + off + 12; value_len = (size_t)(len - 4);
                       }
                       off += 8 + (size_t)len;
                   }
                   if (!value || value_len < 8) break;
-
-                  /* signers: u32 length, then signer entries (exactly one allowed) */
                   unsigned long signers_len = ra_u32(value);
                   if (signers_len + 4 > value_len) break;
                   unsigned char const *signer_p = value + 4;
                   if (signers_len < 4) break;
                   unsigned long signer_len = ra_u32(signer_p);
-                  if (signer_len + 4 != signers_len) break;           /* one signer only */
+                  if (signer_len + 4 != signers_len) break;
                   unsigned char const *signed_p = signer_p + 4;
                   if (signer_len < 4) break;
                   unsigned long signed_len = ra_u32(signed_p);
                   if (signed_len + 4 > signer_len) break;
                   unsigned char const *sd = signed_p + 4;
-                  /* signed data: digests (u32 len + data), certificates (u32 len + data) */
                   if (signed_len < 8) break;
                   unsigned long digests_len = ra_u32(sd);
                   if (digests_len + 8 > signed_len) break;
@@ -372,8 +317,7 @@ jobs:
                   if (certs_len + 4 + 4 + digests_len > signed_len) break;
                   if (certs_len < 4) break;
                   unsigned long cert_len = ra_u32(certs_p + 4);
-                  if (cert_len + 4 != certs_len) break;               /* one certificate only */
-
+                  if (cert_len + 4 != certs_len) break;
                   RaSha256 ctx;
                   ra_sha256_init(&ctx);
                   ra_sha256_update(&ctx, certs_p + 8, cert_len);
@@ -384,54 +328,36 @@ jobs:
               fclose(f);
               return ok;
           }
-
           #endif
           APKEOF
           cat > PORT/ANDROID/src/ra_signature_check.h <<'SIGEOF'
           #ifndef RA_SIGNATURE_CHECK_H
           #define RA_SIGNATURE_CHECK_H
-
-          /* Generated by the build workflow: RA_EXPECTED_CERT_SHA256 = hex SHA-256 of the signing certificate. */
           #include "ra_sig_hash.h"
           #include "ra_apk_sig.h"
-
           #include <SDL.h>
           #include <jni.h>
           #include <android/log.h>
           #include <stdlib.h>
           #include <string.h>
-
-          static bool ra_sig_clear(JNIEnv *env)
-          {
-              if (env->ExceptionCheck()) {
-                  env->ExceptionClear();
-                  return true;
-              }
+          static bool ra_sig_clear(JNIEnv *env) {
+              if (env->ExceptionCheck()) { env->ExceptionClear(); return true; }
               return false;
           }
-
-          static bool ra_sig_hash_matches(JNIEnv *env, jobject signature)
-          {
+          static bool ra_sig_hash_matches(JNIEnv *env, jobject signature) {
               static char const *hex = "0123456789abcdef";
               jclass sig_cls = env->GetObjectClass(signature);
               jmethodID to_bytes = env->GetMethodID(sig_cls, "toByteArray", "()[B");
               jbyteArray cert = (jbyteArray)env->CallObjectMethod(signature, to_bytes);
-              if (ra_sig_clear(env) || !cert) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !cert) return false;
               jclass md_cls = env->FindClass("java/security/MessageDigest");
-              jmethodID get_instance = env->GetStaticMethodID(md_cls, "getInstance",
-                  "(Ljava/lang/String;)Ljava/security/MessageDigest;");
+              jmethodID get_instance = env->GetStaticMethodID(md_cls, "getInstance", "(Ljava/lang/String;)Ljava/security/MessageDigest;");
               jstring algorithm = env->NewStringUTF("SHA-256");
               jobject md = env->CallStaticObjectMethod(md_cls, get_instance, algorithm);
-              if (ra_sig_clear(env) || !md) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !md) return false;
               jmethodID digest = env->GetMethodID(md_cls, "digest", "([B)[B");
               jbyteArray hash = (jbyteArray)env->CallObjectMethod(md, digest, cert);
-              if (ra_sig_clear(env) || !hash || env->GetArrayLength(hash) != 32) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !hash || env->GetArrayLength(hash) != 32) return false;
               jbyte bytes[32];
               env->GetByteArrayRegion(hash, 0, 32, bytes);
               char text[65];
@@ -443,22 +369,15 @@ jobs:
               text[64] = 0;
               return strcmp(text, RA_EXPECTED_CERT_SHA256) == 0;
           }
-
-          static bool ra_pm_signature_ok(JNIEnv *env, jobject activity)
-          {
+          static bool ra_pm_signature_ok(JNIEnv *env, jobject activity) {
               jclass act_cls = env->GetObjectClass(activity);
               jmethodID get_pm = env->GetMethodID(act_cls, "getPackageManager", "()Landroid/content/pm/PackageManager;");
               jmethodID get_pkg = env->GetMethodID(act_cls, "getPackageName", "()Ljava/lang/String;");
               jobject pm = env->CallObjectMethod(activity, get_pm);
               jstring pkg = (jstring)env->CallObjectMethod(activity, get_pkg);
-              if (ra_sig_clear(env) || !pm || !pkg) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !pm || !pkg) return false;
               jclass pm_cls = env->GetObjectClass(pm);
-              jmethodID get_pi = env->GetMethodID(pm_cls, "getPackageInfo",
-                  "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
-
-              /* Android 9+ : PackageInfo.signingInfo (GET_SIGNING_CERTIFICATES = 0x08000000) */
+              jmethodID get_pi = env->GetMethodID(pm_cls, "getPackageInfo", "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
               jobject info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x08000000);
               if (!ra_sig_clear(env) && info) {
                   jclass info_cls = env->GetObjectClass(info);
@@ -467,8 +386,7 @@ jobs:
                       jobject si = env->GetObjectField(info, si_field);
                       if (si) {
                           jclass si_cls = env->GetObjectClass(si);
-                          jmethodID get_signers = env->GetMethodID(si_cls, "getApkContentsSigners",
-                              "()[Landroid/content/pm/Signature;");
+                          jmethodID get_signers = env->GetMethodID(si_cls, "getApkContentsSigners", "()[Landroid/content/pm/Signature;");
                           jobjectArray signers = (jobjectArray)env->CallObjectMethod(si, get_signers);
                           if (!ra_sig_clear(env) && signers && env->GetArrayLength(signers) == 1) {
                               jobject one = env->GetObjectArrayElement(signers, 0);
@@ -478,63 +396,41 @@ jobs:
                       }
                   }
               }
-
-              /* Older Android: PackageInfo.signatures (GET_SIGNATURES = 0x40) */
               info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x40);
-              if (ra_sig_clear(env) || !info) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !info) return false;
               jclass info_cls = env->GetObjectClass(info);
               jfieldID sigs_field = env->GetFieldID(info_cls, "signatures", "[Landroid/content/pm/Signature;");
-              if (ra_sig_clear(env) || !sigs_field) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !sigs_field) return false;
               jobjectArray sigs = (jobjectArray)env->GetObjectField(info, sigs_field);
-              if (!sigs || env->GetArrayLength(sigs) != 1) {
-                  return false;
-              }
+              if (!sigs || env->GetArrayLength(sigs) != 1) return false;
               jobject one = env->GetObjectArrayElement(sigs, 0);
               return one && ra_sig_hash_matches(env, one);
           }
-
-          static bool ra_file_signature_ok(JNIEnv *env, jobject activity)
-          {
+          static bool ra_file_signature_ok(JNIEnv *env, jobject activity) {
               jclass act_cls = env->GetObjectClass(activity);
               jmethodID get_path = env->GetMethodID(act_cls, "getPackageCodePath", "()Ljava/lang/String;");
               jstring path = (jstring)env->CallObjectMethod(activity, get_path);
-              if (ra_sig_clear(env) || !path) {
-                  return false;
-              }
+              if (ra_sig_clear(env) || !path) return false;
               char const *utf = env->GetStringUTFChars(path, 0);
-              if (!utf) {
-                  return false;
-              }
+              if (!utf) return false;
               char hex[65];
               bool ok = ra_apk_cert_sha256(utf, hex) && strcmp(hex, RA_EXPECTED_CERT_SHA256) == 0;
               env->ReleaseStringUTFChars(path, utf);
               return ok;
           }
-
-          static bool ra_signature_ok(void)
-          {
+          static bool ra_signature_ok(void) {
               JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
               jobject activity = (jobject)SDL_AndroidGetActivity();
-              if (!env || !activity) {
-                  return false;
-              }
-              /* Both must agree: the certificate read straight from the APK file and the one PackageManager reports. */
+              if (!env || !activity) return false;
               return ra_file_signature_ok(env, activity) && ra_pm_signature_ok(env, activity);
           }
-
-          static void ra_verify_signature_or_exit(void)
-          {
+          static void ra_verify_signature_or_exit(void) {
               if (!ra_signature_ok()) {
                   __android_log_print(ANDROID_LOG_ERROR, "RedAlert", "Invalid APK signature");
                   SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Berlions", "Invalid APK signature", NULL);
                   exit(1);
               }
           }
-
           #endif
           SIGEOF
           python3 - <<'PYEOF'
@@ -583,15 +479,19 @@ jobs:
         run: |
           set -e
           D=android/app/src/main/java/com/raport/redalert
+          mkdir -p "$D"
           cat > "$D/TouchControls.java" <<'JAVAEOF'
           package com.raport.redalert;
 
           import android.app.Activity;
+          import android.content.res.ColorStateList;
           import android.graphics.Color;
+          import android.graphics.Typeface;
           import android.graphics.drawable.GradientDrawable;
+          import android.graphics.drawable.RippleDrawable;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.os.SystemClock;
-          import android.util.DisplayMetrics;
-          import android.util.Log;
           import android.util.TypedValue;
           import android.view.Gravity;
           import android.view.InputDevice;
@@ -600,162 +500,182 @@ jobs:
           import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
+          import android.widget.Button;
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
-          import android.widget.TextView;
-          import org.libsdl.app.SDLActivity;
+          import android.widget.RelativeLayout;
 
-          /** On-screen touch buttons that send the game's own hotkeys. */
-          final class TouchControls {
-              private static final String TAG = "TouchControls";
-
+          /** Phone controls (mobsik-style): Все/Стоп/Охрана/Отмена + D-pad + HUD */
+          public final class TouchControls {
               private final Activity activity;
-              private final FrameLayout panel;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final boolean ru;
+              private View pad;
+              private View actions;
+              private boolean hudVisible = true;
+              private Runnable repeat;
 
-              static void attach(Activity activity) {
-                  try {
-                      new TouchControls(activity);
-                  } catch (Throwable t) {
-                      Log.e(TAG, "Touch controls failed to attach", t);
-                  }
+              public static void attach(Activity activity) {
+                  try { new TouchControls(activity); }
+                  catch (Throwable t) { android.util.Log.e("TouchControls", "attach failed", t); }
               }
 
               private TouchControls(Activity a) {
-                  activity = a;
+                  this.activity = a;
+                  String lang = a.getResources().getConfiguration().locale.getLanguage();
+                  this.ru = "ru".equals(lang) || "kk".equals(lang);
+
                   FrameLayout root = new FrameLayout(a);
-                  panel = new FrameLayout(a);
-                  root.addView(panel, new FrameLayout.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  RelativeLayout layer = new RelativeLayout(a);
+                  root.addView(layer, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-                  int cell = dp(52);
-                  int gap = dp(4);
-                  int left = dp(28);
-                  int bottom = dp(12);
-                  int top = dp(12);
+                  // Bottom-center: Все / Стоп / Охрана / Отмена
+                  LinearLayout bottom = new LinearLayout(a);
+                  bottom.setGravity(Gravity.CENTER);
+                  RelativeLayout.LayoutParams bp = new RelativeLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
+                  bp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                  bp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+                  bp.bottomMargin = dp(8);
+                  layer.addView(bottom, bp);
+                  this.actions = bottom;
 
-                  // Top-left: Menu (Esc) and HUD (hide/show the buttons)
-                  TextView menu = makeKeyButton("\u041c\u0435\u043d\u044e", KeyEvent.KEYCODE_ESCAPE, 13);
-                  panel.addView(menu, params(dp(72), cell, Gravity.TOP | Gravity.START, left, top, 0, 0));
+                  addCmd(bottom, ru ? "Все" : "All", KeyEvent.KEYCODE_E);
+                  addCmd(bottom, ru ? "Стоп" : "Stop", KeyEvent.KEYCODE_S);
+                  addCmd(bottom, ru ? "Охрана" : "Guard", KeyEvent.KEYCODE_G);
+                  addCmd(bottom, ru ? "Отмена" : "Cancel", KeyEvent.KEYCODE_ESCAPE);
 
-                  TextView hud = makeButton("HUD", 13);
-                  hud.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                              panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-                          }
-                          return true;
-                      }
+                  // Top-left: Меню + HUD
+                  LinearLayout top = new LinearLayout(a);
+                  RelativeLayout.LayoutParams tp = new RelativeLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
+                  tp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+                  tp.addRule(RelativeLayout.ALIGN_PARENT_START);
+                  tp.topMargin = dp(16);
+                  tp.leftMargin = dp(8);
+                  layer.addView(top, tp);
+
+                  addCmd(top, ru ? "Меню" : "Menu", KeyEvent.KEYCODE_ESCAPE);
+
+                  Button hud = makeBtn("HUD");
+                  hud.setOnClickListener(v -> {
+                      hudVisible = !hudVisible;
+                      int vis = hudVisible ? View.VISIBLE : View.GONE;
+                      if (pad != null) pad.setVisibility(vis);
+                      if (actions != null) actions.setVisibility(vis);
                   });
-                  root.addView(hud, params(dp(60), cell, Gravity.TOP | Gravity.START,
-                      left + dp(72) + gap * 2, top, 0, 0));
+                  top.addView(hud, btnLp());
 
-                  // Bottom-left: scroll pad (arrow keys)
-                  panel.addView(makeKeyButton("\u25C0", KeyEvent.KEYCODE_DPAD_LEFT, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left, 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25BC", KeyEvent.KEYCODE_DPAD_DOWN, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25B6", KeyEvent.KEYCODE_DPAD_RIGHT, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + 2 * (cell + gap), 0, 0, bottom));
-                  panel.addView(makeKeyButton("\u25B2", KeyEvent.KEYCODE_DPAD_UP, 20),
-                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom + cell + gap));
+                  // Bottom-left D-pad (hold = repeat)
+                  LinearLayout dpad = new LinearLayout(a);
+                  dpad.setOrientation(LinearLayout.VERTICAL);
+                  RelativeLayout.LayoutParams dpLp = new RelativeLayout.LayoutParams(dp(150), dp(150));
+                  dpLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                  dpLp.addRule(RelativeLayout.ALIGN_PARENT_START);
+                  dpLp.leftMargin = dp(8);
+                  dpLp.bottomMargin = dp(8);
+                  layer.addView(dpad, dpLp);
+                  this.pad = dpad;
 
-                  // Bottom-centre: All / Stop / Guard / Cancel
-                  LinearLayout row = new LinearLayout(a);
-                  row.setOrientation(LinearLayout.HORIZONTAL);
-                  int w = dp(66);
-                  row.addView(makeKeyButton("\u0412\u0441\u0435", KeyEvent.KEYCODE_E, 13), rowParams(w, cell, gap));
-                  row.addView(makeKeyButton("\u0421\u0442\u043e\u043f", KeyEvent.KEYCODE_S, 13), rowParams(w, cell, gap));
-                  row.addView(makeKeyButton("\u041e\u0445\u0440\u0430\u043d\u0430", KeyEvent.KEYCODE_G, 13), rowParams(w, cell, gap));
+                  LinearLayout rowUp = new LinearLayout(a);
+                  rowUp.setGravity(Gravity.CENTER);
+                  dpad.addView(rowUp);
+                  addPad(rowUp, "▲", KeyEvent.KEYCODE_DPAD_UP);
 
-                  TextView cancel = makeButton("\u041e\u0442\u043c\u0435\u043d\u0430", 13);
-                  cancel.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                              v.setAlpha(0.6f);
-                              rightClick();
-                          } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
-                              v.setAlpha(1f);
-                          }
-                          return true;
-                      }
-                  });
-                  row.addView(cancel, rowParams(w, cell, gap));
-
-                  int screenW = a.getResources().getDisplayMetrics().widthPixels;
-                  panel.addView(row, params(ViewGroup.LayoutParams.WRAP_CONTENT, cell,
-                      Gravity.BOTTOM | Gravity.START, (int) (screenW * 0.36f), 0, 0, bottom));
+                  LinearLayout rowMid = new LinearLayout(a);
+                  rowMid.setGravity(Gravity.CENTER);
+                  dpad.addView(rowMid);
+                  addPad(rowMid, "◀", KeyEvent.KEYCODE_DPAD_LEFT);
+                  addPad(rowMid, "▼", KeyEvent.KEYCODE_DPAD_DOWN);
+                  addPad(rowMid, "▶", KeyEvent.KEYCODE_DPAD_RIGHT);
 
                   a.addContentView(root, new ViewGroup.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
               }
 
-              private TextView makeKeyButton(String label, final int keyCode, int sp) {
-                  TextView b = makeButton(label, sp);
-                  b.setOnTouchListener(new View.OnTouchListener() {
-                      @Override
-                      public boolean onTouch(View v, MotionEvent e) {
-                          int action = e.getAction();
-                          if (action == MotionEvent.ACTION_DOWN) {
-                              v.setAlpha(0.6f);
-                              sendKey(keyCode, true);
-                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                              v.setAlpha(1f);
-                              sendKey(keyCode, false);
+              private void addCmd(LinearLayout parent, String label, int keyCode) {
+                  Button b = makeBtn(label);
+                  b.setOnTouchListener((v, e) -> {
+                      int act = e.getActionMasked();
+                      if (act == MotionEvent.ACTION_DOWN) { v.setPressed(true); pulse(keyCode); return true; }
+                      if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) { v.setPressed(false); return true; }
+                      return true;
+                  });
+                  parent.addView(b, btnLp());
+              }
+
+              private void addPad(LinearLayout parent, String label, final int keyCode) {
+                  Button b = makeBtn(label);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  b.setOnTouchListener((v, e) -> {
+                      int act = e.getActionMasked();
+                      if (act == MotionEvent.ACTION_DOWN) {
+                          stopRepeat();
+                          v.setPressed(true);
+                          Runnable r = new Runnable() {
+                              @Override public void run() {
+                                  if (repeat != this) return;
+                                  pulse(keyCode);
+                                  handler.postDelayed(this, 85);
+                              }
+                          };
+                          repeat = r;
+                          r.run();
+                          return true;
+                      }
+                      if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                          stopRepeat(); v.setPressed(false); return true;
+                      }
+                      if (act == MotionEvent.ACTION_MOVE) {
+                          if (e.getX() < 0 || e.getY() < 0 || e.getX() >= v.getWidth() || e.getY() >= v.getHeight()) {
+                              stopRepeat(); v.setPressed(false);
                           }
                           return true;
                       }
+                      return true;
                   });
-                  return b;
+                  parent.addView(b, btnLp());
               }
 
-              private TextView makeButton(String label, int sp) {
-                  TextView b = new TextView(activity);
-                  b.setText(label);
-                  b.setTextColor(Color.WHITE);
-                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-                  b.setGravity(Gravity.CENTER);
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xB3141A1F);
-                  bg.setCornerRadius(dp(10));
-                  b.setBackground(bg);
-                  return b;
-              }
-
-              private void sendKey(int keyCode, boolean down) {
+              private void pulse(int keyCode) {
                   long t = SystemClock.uptimeMillis();
-                  KeyEvent event = new KeyEvent(t, t,
-                      down ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, 0, 0,
-                      KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
-                  activity.dispatchKeyEvent(event);
+                  activity.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, keyCode, 0, 0,
+                          KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+                  activity.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, keyCode, 0, 0,
+                          KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
               }
 
-              /** Right mouse click (deselect / cancel) in the middle of the map area. */
-              private void rightClick() {
-                  DisplayMetrics dm = activity.getResources().getDisplayMetrics();
-                  float x = dm.widthPixels * 0.4f;
-                  float y = dm.heightPixels * 0.5f;
-                  SDLActivity.onNativeMouse(2, MotionEvent.ACTION_DOWN, x, y, false);
-                  SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, x, y, false);
+              private void stopRepeat() {
+                  if (repeat != null) { handler.removeCallbacks(repeat); repeat = null; }
               }
 
-              private int dp(int value) {
-                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
-                      activity.getResources().getDisplayMetrics());
+              private Button makeBtn(String text) {
+                  Button b = new Button(activity);
+                  b.setText(text);
+                  b.setAllCaps(false);
+                  b.setTextColor(Color.WHITE);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  b.setTypeface(Typeface.DEFAULT_BOLD);
+                  b.setPadding(dp(10), dp(6), dp(10), dp(6));
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xCC1A1F26);
+                  bg.setCornerRadius(dp(10));
+                  bg.setStroke(dp(1), 0x66FFFFFF);
+                  b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), bg, null));
+                  return b;
               }
 
-              private static FrameLayout.LayoutParams params(int w, int h, int gravity,
-                                                             int l, int t, int r, int b) {
-                  FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
-                  p.setMargins(l, t, r, b);
+              private LinearLayout.LayoutParams btnLp() {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+                  p.setMargins(dp(4), dp(2), dp(4), dp(2));
                   return p;
               }
 
-              private static LinearLayout.LayoutParams rowParams(int w, int h, int gap) {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
-                  p.setMargins(gap, 0, gap, 0);
-                  return p;
+              private int dp(int v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          activity.getResources().getDisplayMetrics());
               }
           }
           JAVAEOF
@@ -763,11 +683,13 @@ jobs:
           p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
           s = open(p, encoding="utf-8").read()
           needle = "super.onCreate(savedInstanceState);"
-          assert needle in s, "onCreate not found"
-          s = s.replace(needle, needle + "\n        TouchControls.attach(this);", 1)
-          open(p, "w", encoding="utf-8").write(s)
+          if "TouchControls.attach" not in s:
+              assert needle in s, "onCreate not found"
+              s = s.replace(needle, needle + "\n        TouchControls.attach(this);", 1)
+              open(p, "w", encoding="utf-8").write(s)
+          print("TouchControls hooked")
           PYEOF
-          grep -n "TouchControls" "$D/RedAlertActivity.java"
+          grep -n "TouchControls" "$D/RedAlertActivity.java" || true
 
       - name: Build APK
         run: |
