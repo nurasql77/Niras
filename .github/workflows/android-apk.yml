@@ -6,7 +6,7 @@ on:
       drive_file_id:
         description: "Google Drive game-data APK file ID"
         required: true
-        default: "14UV16nRMrBgQmKVxNbKrEov7bQXnkjMn"
+        default: "1_9ofrbcEtU8c0YjSA4Iv_VBR3oYHzCQa"
       english:
         description: "Overlay English files"
         required: true
@@ -20,7 +20,7 @@ on:
         required: true
         default: "true"
       stretch:
-        description: "Stretch picture to full screen"
+        description: "Use immersive Android fullscreen (do not stretch the render viewport)"
         required: true
         default: "true"
       direct_touch:
@@ -69,7 +69,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.4.1"
-          
+
       - name: Download game data
         env:
           FILE_ID: ${{ inputs.drive_file_id }}
@@ -168,320 +168,235 @@ jobs:
           import android.app.Activity;
           import android.graphics.Color;
           import android.graphics.drawable.GradientDrawable;
-          import android.os.SystemClock;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.util.TypedValue;
           import android.view.Gravity;
-          import android.view.KeyEvent;
           import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
-          import android.widget.FrameLayout;
+          import android.widget.Button;
           import android.widget.LinearLayout;
-          import android.widget.TextView;
-
+          import android.widget.RelativeLayout;
           import org.libsdl.app.SDLActivity;
 
           final class TouchControls {
               private final Activity activity;
-              private final FrameLayout panel;
+              private final ViewGroup layout;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private View actions, pad, top;
+              private Button hudButton;
+              private boolean visible = true;
+              private Runnable repeat;
 
-              static void attach(Activity activity) {
-                  try {
-                      new TouchControls(activity);
-                  } catch (Throwable ignored) {
-                  }
+              static void attach(Activity activity, ViewGroup layout, View surface) {
+                  try { new TouchControls(activity, layout, surface); } catch (Throwable ignored) {}
               }
 
-              private TouchControls(Activity activity) {
+              private TouchControls(Activity activity, ViewGroup layout, View surface) {
                   this.activity = activity;
+                  this.layout = layout;
 
-                  FrameLayout root = new FrameLayout(activity);
-                  panel = new FrameLayout(activity);
+                  RelativeLayout.LayoutParams surfaceLp = new RelativeLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                  surfaceLp.leftMargin = 0;
+                  surfaceLp.rightMargin = 0;
+                  surface.setLayoutParams(surfaceLp);
 
-                  root.addView(
-                      panel,
-                      new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.MATCH_PARENT
-                      )
-                  );
+                  LinearLayout actionRow = new LinearLayout(activity);
+                  actionRow.setGravity(Gravity.CENTER);
+                  RelativeLayout.LayoutParams actionLp = new RelativeLayout.LayoutParams(
+                      ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
+                  actionLp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+                  actionLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                  actionLp.bottomMargin = dp(6);
+                  layout.addView(actionRow, actionLp);
+                  addCommand(actionRow, "▦\nВсе", 0x21);
+                  addCommand(actionRow, "■\nСтоп", 0x2f);
+                  addCommand(actionRow, "♢\nОхрана", 0x23);
+                  addCommand(actionRow, "×\nОтмена", 0x8e);
+                  actions = actionRow;
 
-                  int cell = dp(52);
-                  int gap = dp(4);
-                  int left = dp(24);
-                  int bottom = dp(12);
-                  int top = dp(12);
+                  LinearLayout topRow = new LinearLayout(activity);
+                  topRow.setGravity(Gravity.CENTER_VERTICAL);
+                  RelativeLayout.LayoutParams topLp = new RelativeLayout.LayoutParams(
+                      ViewGroup.LayoutParams.WRAP_CONTENT, dp(54));
+                  topLp.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
+                  topLp.topMargin = dp(22);
+                  topLp.leftMargin = dp(6);
+                  layout.addView(topRow, topLp);
+                  addPulseButton(topRow, "☰\nМеню", 0x6f);
+                  top = topRow;
 
-                  // Menu / ESC
-                  panel.addView(
-                      makeKeyButton("Меню", KeyEvent.KEYCODE_ESCAPE, 13),
-                      params(dp(72), cell,
-                          Gravity.TOP | Gravity.START,
-                          left, top, 0, 0)
-                  );
+                  LinearLayout dpad = new LinearLayout(activity);
+                  dpad.setOrientation(LinearLayout.VERTICAL);
+                  RelativeLayout.LayoutParams dpadLp = new RelativeLayout.LayoutParams(dp(150), dp(104));
+                  dpadLp.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
+                  dpadLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                  dpadLp.leftMargin = dp(6);
+                  dpadLp.bottomMargin = dp(6);
+                  layout.addView(dpad, dpadLp);
 
-                  // HUD: hide/show controls. Help button intentionally omitted.
-                  TextView hud = makeButton("HUD", 13);
-                  hud.setOnClickListener(v -> {
-                      int visibility =
-                          panel.getVisibility() == View.VISIBLE
-                              ? View.GONE
-                              : View.VISIBLE;
+                  LinearLayout upRow = new LinearLayout(activity);
+                  upRow.setGravity(Gravity.CENTER);
+                  dpad.addView(upRow, new LinearLayout.LayoutParams(-1, dp(52)));
+                  addRepeatButton(upRow, "↑", 0x13);
 
-                      panel.setVisibility(visibility);
+                  LinearLayout arrows = new LinearLayout(activity);
+                  arrows.setGravity(Gravity.CENTER);
+                  dpad.addView(arrows, new LinearLayout.LayoutParams(-1, dp(52)));
+                  addRepeatButton(arrows, "←", 0x15);
+                  addRepeatButton(arrows, "↓", 0x14);
+                  addRepeatButton(arrows, "→", 0x16);
+                  pad = dpad;
+
+                  hudButton = makeButton("HUD", 9);
+                  hudButton.setContentDescription("Hide or show controls");
+                  RelativeLayout.LayoutParams hudLp = new RelativeLayout.LayoutParams(dp(48), dp(50));
+                  hudLp.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
+                  hudLp.topMargin = dp(22);
+                  hudLp.rightMargin = dp(6);
+                  layout.addView(hudButton, hudLp);
+                  hudButton.setOnClickListener(v -> {
+                      stopRepeat();
+                      visible = !visible;
+                      int state = visible ? View.VISIBLE : View.GONE;
+                      actions.setVisibility(state);
+                      pad.setVisibility(state);
+                      top.setVisibility(state);
+                      hudButton.setAlpha(visible ? 0.80f : 0.45f);
                   });
-
-                  root.addView(
-                      hud,
-                      params(dp(60), cell,
-                          Gravity.TOP | Gravity.END,
-                          0, top, left, 0)
-                  );
-
-                  // D-pad
-                  panel.addView(
-                      makeKeyButton("◀", KeyEvent.KEYCODE_DPAD_LEFT, 20),
-                      params(cell, cell,
-                          Gravity.BOTTOM | Gravity.START,
-                          left, 0, 0, bottom)
-                  );
-
-                  panel.addView(
-                      makeKeyButton("▼", KeyEvent.KEYCODE_DPAD_DOWN, 20),
-                      params(cell, cell,
-                          Gravity.BOTTOM | Gravity.START,
-                          left + cell + gap, 0, 0, bottom)
-                  );
-
-                  panel.addView(
-                      makeKeyButton("▶", KeyEvent.KEYCODE_DPAD_RIGHT, 20),
-                      params(cell, cell,
-                          Gravity.BOTTOM | Gravity.START,
-                          left + 2 * (cell + gap), 0, 0, bottom)
-                  );
-
-                  panel.addView(
-                      makeKeyButton("▲", KeyEvent.KEYCODE_DPAD_UP, 20),
-                      params(cell, cell,
-                          Gravity.BOTTOM | Gravity.START,
-                          left + cell + gap, 0, 0,
-                          bottom + cell + gap)
-                  );
-
-                  // Red Alert action keys used by the ready APK.
-                  LinearLayout actions = new LinearLayout(activity);
-                  actions.setOrientation(LinearLayout.HORIZONTAL);
-
-                  int actionW = dp(66);
-
-                  actions.addView(
-                      makeKeyButton("Все", KeyEvent.KEYCODE_E, 13),
-                      rowParams(actionW, cell, gap)
-                  );
-
-                  actions.addView(
-                      makeKeyButton("Стоп", KeyEvent.KEYCODE_S, 13),
-                      rowParams(actionW, cell, gap)
-                  );
-
-                  actions.addView(
-                      makeKeyButton("Охрана", KeyEvent.KEYCODE_G, 13),
-                      rowParams(actionW, cell, gap)
-                  );
-
-                  actions.addView(
-                      makeKeyButton("Отмена", KeyEvent.KEYCODE_ESCAPE, 13),
-                      rowParams(actionW, cell, gap)
-                  );
-
-                  panel.addView(
-                      actions,
-                      params(
-                          ViewGroup.LayoutParams.WRAP_CONTENT,
-                          cell,
-                          Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL,
-                          0, 0, 0, bottom
-                      )
-                  );
-
-                  activity.addContentView(
-                      root,
-                      new ViewGroup.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.MATCH_PARENT
-                      )
-                  );
               }
 
-              private TextView makeKeyButton(
-                      String label,
-                      final int keyCode,
-                      int textSize
-              ) {
-                  TextView button = makeButton(label, textSize);
+              private void addCommand(LinearLayout row, String text, int keyCode) {
+                  Button b = makeButton(text, 9);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
+                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
+                  row.addView(b, lp);
+                  b.setOnClickListener(v -> pulse(keyCode));
+              }
 
-                  button.setOnTouchListener((v, event) -> {
-                      switch (event.getActionMasked()) {
+              private void addPulseButton(LinearLayout row, String text, int keyCode) {
+                  Button b = makeButton(text, 9);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
+                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
+                  row.addView(b, lp);
+                  b.setOnClickListener(v -> pulse(keyCode));
+              }
+
+              private void addRepeatButton(LinearLayout row, String text, int keyCode) {
+                  Button b = makeButton(text, 19);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
+                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
+                  row.addView(b, lp);
+                  b.setOnTouchListener((v, e) -> {
+                      switch (e.getActionMasked()) {
                           case MotionEvent.ACTION_DOWN:
-                              v.setAlpha(0.60f);
-                              sendSDLKey(keyCode, true);
+                              stopRepeat(); v.setPressed(true);
+                              repeat = new Runnable() {
+                                  @Override public void run() {
+                                      if (repeat != this) return;
+                                      pulse(keyCode); handler.postDelayed(this, 90);
+                                  }
+                              };
+                              repeat.run(); return true;
+                          case MotionEvent.ACTION_MOVE:
+                              if (e.getX() < 0 || e.getY() < 0 || e.getX() >= v.getWidth() || e.getY() >= v.getHeight()) {
+                                  stopRepeat(); v.setPressed(false);
+                              }
                               return true;
-
                           case MotionEvent.ACTION_UP:
-                              v.setAlpha(1.0f);
-                              sendSDLKey(keyCode, false);
-                              v.performClick();
-                              return true;
-
                           case MotionEvent.ACTION_CANCEL:
-                              v.setAlpha(1.0f);
-                              sendSDLKey(keyCode, false);
-                              return true;
+                              stopRepeat(); v.setPressed(false); return true;
                       }
-
                       return true;
                   });
-
-                  return button;
               }
 
-              private TextView makeButton(String label, int textSize) {
-                  TextView button = new TextView(activity);
-                  button.setText(label);
-                  button.setTextColor(Color.WHITE);
-                  button.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSize);
-                  button.setGravity(Gravity.CENTER);
-
-                  GradientDrawable background = new GradientDrawable();
-                  background.setColor(0xB3141A1F);
-                  background.setCornerRadius(dp(10));
-                  button.setBackground(background);
-
-                  return button;
+              private Button makeButton(String text, int size) {
+                  Button b = new Button(activity);
+                  b.setText(text); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
+                  b.setAllCaps(false); b.setPadding(dp(3), dp(5), dp(3), dp(3));
+                  b.setMinWidth(0); b.setMinimumWidth(0); b.setMinHeight(0); b.setMinimumHeight(0);
+                  b.setTextColor(Color.WHITE); b.setAlpha(0.80f); b.setFocusable(false);
+                  b.setStateListAnimator(null);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xCC14181D); bg.setCornerRadius(dp(8)); b.setBackground(bg);
+                  return b;
               }
 
-              private void sendSDLKey(int keyCode, boolean down) {
-                  // The ready APK sends input through SDLActivity's native
-                  // key bridge instead of Activity.dispatchKeyEvent().
-                  try {
-                      long time = SystemClock.uptimeMillis();
-
-                      if (down) {
-                          SDLActivity.onNativeKeyDown(keyCode);
-                      } else {
-                          SDLActivity.onNativeKeyUp(keyCode);
-                      }
-
-                      // Keep timestamp referenced so Android does not
-                      // optimize away the timing operation.
-                      if (time < 0) {
-                          throw new IllegalStateException();
-                      }
-                  } catch (Throwable ignored) {
-                  }
+              private void pulse(int keyCode) {
+                  try { SDLActivity.onNativeKeyDown(keyCode); SDLActivity.onNativeKeyUp(keyCode); }
+                  catch (Throwable ignored) {}
               }
 
-              private int dp(int value) {
-                  return (int) TypedValue.applyDimension(
-                      TypedValue.COMPLEX_UNIT_DIP,
-                      value,
-                      activity.getResources().getDisplayMetrics()
-                  );
+              private void stopRepeat() {
+                  if (repeat != null) { handler.removeCallbacks(repeat); repeat = null; }
               }
 
-              private static FrameLayout.LayoutParams params(
-                      int width,
-                      int height,
-                      int gravity,
-                      int left,
-                      int top,
-                      int right,
-                      int bottom
-              ) {
-                  FrameLayout.LayoutParams p =
-                      new FrameLayout.LayoutParams(width, height, gravity);
-                  p.setMargins(left, top, right, bottom);
-                  return p;
-              }
-
-              private static LinearLayout.LayoutParams rowParams(
-                      int width,
-                      int height,
-                      int gap
-              ) {
-                  LinearLayout.LayoutParams p =
-                      new LinearLayout.LayoutParams(width, height);
-                  p.setMargins(gap, 0, gap, 0);
-                  return p;
-              }
+              private int dp(int v) { return Math.round(v * activity.getResources().getDisplayMetrics().density); }
           }
           JAVA
 
           python3 - <<'PY'
           p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
           s = open(p, encoding="utf-8").read()
-
-          if "TouchControls.attach(this);" not in s:
-              needle = "super.onCreate(savedInstanceState);"
-              if needle not in s:
-                  raise SystemExit("onCreate() not found in RedAlertActivity.java")
-              s = s.replace(
-                  needle,
-                  needle + "\n        TouchControls.attach(this);",
-                  1
-              )
-              open(p, "w", encoding="utf-8").write(s)
-
-          print("SDL TouchControls attached.")
-
+          marker = "public class RedAlertActivity extends SDLActivity {"
+          if marker not in s: raise SystemExit("RedAlertActivity class declaration not found")
+          fullscreen = r"""
+              private void configureImmersiveMode() {
+                  android.view.Window w = getWindow();
+                  w.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                  if (android.os.Build.VERSION.SDK_INT >= 28) {
+                      android.view.WindowManager.LayoutParams lp = w.getAttributes();
+                      lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                      w.setAttributes(lp);
+                  }
+                  android.view.View decor = w.getDecorView();
+                  decor.setSystemUiVisibility(0x1706);
+                  if (android.os.Build.VERSION.SDK_INT >= 30) {
+                      w.setDecorFitsSystemWindows(false);
+                      android.view.WindowInsetsController c = decor.getWindowInsetsController();
+                      if (c != null) {
+                          c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                          c.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+                      }
+                  }
+              }
+          """
+          if "private void configureImmersiveMode()" not in s:
+              s=s.replace(marker,marker+"\n"+fullscreen,1)
+          needle="super.onCreate(savedInstanceState);"
+          attach="super.onCreate(savedInstanceState);\n        configureImmersiveMode();\n        TouchControls.attach(this, mLayout, mSurface);"
+          if "TouchControls.attach(this, mLayout, mSurface);" not in s:
+              if needle not in s: raise SystemExit("onCreate() not found")
+              s=s.replace(needle,attach,1)
+          open(p,"w",encoding="utf-8").write(s)
           PY
 
-      - name: Stretch to full screen
-        if: ${{ inputs.stretch == 'true' }}
+      # IMPORTANT: Do not force a custom render viewport here.
+      # The game keeps its native/aspect viewport so SDL mouse/touch coordinates
+      # stay aligned with the rendered game surface. Android itself is immersive
+      # fullscreen through RedAlertActivity; changing only the viewport would
+      # make the visible button and the actual game click position diverge.
+
+      - name: Validate fullscreen and controls
         run: |
           set -e
-          python3 - <<'PY'
-          p = "PORT/MAC/include/ra_aspect_viewport.h"
-          s = open(p, encoding="utf-8").read()
-
-          needle = "\tif ((long long)target_w * source_h > (long long)target_h * source_w) {"
-
-          if "viewport.w = target_w;" not in s:
-              if needle not in s:
-                  raise SystemExit("viewport code not found")
-
-              stretch = (
-                  "\tviewport.x = 0;\n"
-                  "\tviewport.y = 0;\n"
-                  "\tviewport.w = target_w;\n"
-                  "\tviewport.h = target_h;\n"
-                  "\treturn viewport;\n\n"
-              )
-
-              s = s.replace(needle, stretch + needle, 1)
-              open(p, "w", encoding="utf-8").write(s)
-
-          print("Full-screen stretch applied.")
-
-          PY
-
-      - name: Direct touch
-        if: ${{ inputs.direct_touch == 'true' }}
-        run: |
-          set -e
-          python3 - <<'PY'
-          p = "PORT/MAC/src/mac_sdl_runtime.cpp"
-          s = open(p, encoding="utf-8").read()
-
-          s = s.replace(
-              "MobileTouchCursorHidden = false",
-              "MobileTouchCursorHidden = true"
-          )
-
-          open(p, "w", encoding="utf-8").write(s)
-          print("Touch cursor hidden.")
-
-          PY
+          SRC=android/app/src/main/java/com/raport/redalert/RedAlertActivity.java
+          CTRL=android/app/src/main/java/com/raport/redalert/TouchControls.java
+          grep -q 'FLAG_FULLSCREEN' "$SRC"
+          grep -q 'TouchControls.attach(this, mLayout, mSurface);' "$SRC"
+          grep -q '0x21' "$CTRL"
+          grep -q '0x2f' "$CTRL"
+          grep -q '0x23' "$CTRL"
+          grep -q '0x8e' "$CTRL"
+          grep -q '0x6f' "$CTRL"
+          grep -q '0x13' "$CTRL"
+          grep -q '0x14' "$CTRL"
+          grep -q '0x15' "$CTRL"
+          grep -q '0x16' "$CTRL"
+          ! grep -q 'Помощь' "$CTRL"
 
       - name: Build APK
         run: |
