@@ -1,454 +1,179 @@
-name: Build APK
+name: Modify My Red Alert APK
 
 on:
   workflow_dispatch:
     inputs:
       drive_file_id:
-        description: "Google Drive game-data APK file ID"
+        description: "Google Drive file ID of my APK"
         required: true
-        default: "1_9ofrbcEtU8c0YjSA4Iv_VBR3oYHzCQa"
-      english:
-        description: "Overlay English files"
-        required: true
-        default: "false"
+        default: "1OKGNkQqu5Ow35t8A7sDmFmykdj-YUqbT"
       app_name:
-        description: "App name"
+        description: "Application name"
         required: true
         default: "Berlions"
-      controls:
-        description: "Add on-screen controls"
-        required: true
-        default: "true"
-      stretch:
-        description: "Use immersive Android fullscreen (do not stretch the render viewport)"
-        required: true
-        default: "true"
-      direct_touch:
-        description: "Hide mouse cursor for touch input"
-        required: true
-        default: "true"
 
 env:
-  NDK_VERSION: "28.2.13676358"
-  CMAKE_VERSION: "3.22.1"
-  GRADLE_VERSION: "9.4.1"
-  SDL_VERSION: "2.32.10"
+  JAVA_VERSION: "17"
+  BUILD_TOOLS: "35.0.0"
 
 jobs:
-  apk:
-    name: Build Android APK
+  modify-apk:
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK build tools
         run: |
-          set -e
-          sdkmanager --install \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;${NDK_VERSION}" \
-            "cmake;${CMAKE_VERSION}"
-          yes | sdkmanager --licenses || true
+          sdkmanager --install "build-tools;${BUILD_TOOLS}"
+          yes | sdkmanager --licenses >/dev/null || true
+          echo "$ANDROID_HOME/build-tools/${BUILD_TOOLS}" >> "$GITHUB_PATH"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.4.1"
+      - name: Install APKTool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool unzip
 
-      - name: Download game data
+      - name: Download my APK
         env:
           FILE_ID: ${{ inputs.drive_file_id }}
-          ENGLISH: ${{ inputs.english }}
         run: |
-          set -e
           python3 -m pip install --upgrade gdown
-          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O source.apk
-          test -s source.apk
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O original.apk
+          test -s original.apk
+          stat -c "%s bytes" original.apk
 
-          mkdir -p assets/redalert tmp
-          unzip -q source.apk 'assets/mobsik/*.zip' -d tmp
-          test -f tmp/assets/mobsik/red-alert-data.zip
-
-          unzip -q -o tmp/assets/mobsik/red-alert-data.zip -d assets/redalert
-
-          if [ "$ENGLISH" = "true" ]; then
-            test -f tmp/assets/mobsik/red-alert-data-en.zip
-            unzip -q -o tmp/assets/mobsik/red-alert-data-en.zip -d assets/redalert
-          fi
-
-          test -f assets/redalert/allies/INSTALL/REDALERT.INI
-          rm -rf source.apk tmp
-
-      - name: Download SDL2
+      - name: Verify original APK
         run: |
-          set -e
-          mkdir -p android/third_party
-          curl -fL \
-            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz" \
-            -o /tmp/SDL2.tar.gz
-          tar -xzf /tmp/SDL2.tar.gz -C android/third_party
-          rm -rf android/third_party/SDL
-          mv "android/third_party/SDL2-${SDL_VERSION}" android/third_party/SDL
+          unzip -t original.apk
 
-      - name: Set application name
+          unzip -l original.apk | grep \
+            'assets/redalert/allies/INSTALL/REDALERT.INI'
+
+          unzip -l original.apk | grep \
+            'lib/arm64-v8a/libmain.so'
+
+          unzip -l original.apk | grep \
+            'lib/arm64-v8a/libSDL2.so'
+
+          unzip -l original.apk | grep -E \
+            'classes([0-9]+)?\.dex$'
+
+      - name: Decode APK
+        run: |
+          apktool d \
+            --force \
+            --output decoded \
+            original.apk
+
+      - name: Inspect decoded APK
+        run: |
+          echo "=== ACTIVITIES ==="
+          grep -R -E 'android:name=' \
+            decoded/AndroidManifest.xml | head -100
+
+          echo "=== SDL REFERENCES ==="
+          grep -Ril \
+            -E 'SDLActivity|onNativeKeyDown|onNativeKeyUp|SDL_FINGER|SDL_MOUSE' \
+            decoded/smali* 2>/dev/null | head -100 || true
+
+      - name: Change application label
         env:
           APP_NAME: ${{ inputs.app_name }}
         run: |
-          set -e
-          sed -i \
-            "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" \
-            android/app/src/main/AndroidManifest.xml
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
 
-      - name: Prepare signing key
+          p = Path("decoded/AndroidManifest.xml")
+          s = p.read_text(errors="ignore")
+          name = os.environ["APP_NAME"].replace("&", "&amp;").replace('"', "&quot;")
+
+          s = re.sub(
+              r'android:label="[^"]*"',
+              f'android:label="{name}"',
+              s,
+              count=1
+          )
+
+          p.write_text(s)
+          PY
+
+      - name: Rebuild APK
+        run: |
+          apktool b decoded --output unsigned.apk
+          test -s unsigned.apk
+
+      - name: Align APK
+        run: |
+          zipalign -f -p 4 unsigned.apk aligned.apk
+          zipalign -c -P 4 -v 4 aligned.apk
+
+      - name: Sign APK
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          set -e
-
           test -n "$KEYSTORE_B64"
           test -n "$KEYSTORE_PASSWORD"
 
-          KS="$RUNNER_TEMP/release.p12"
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > release.p12
 
-          ALIAS="$(
-            keytool -list \
-              -keystore "$KS" \
+          KEY_ALIAS="$(
+            keytool -list -v \
+              -keystore release.p12 \
               -storetype PKCS12 \
               -storepass "$KEYSTORE_PASSWORD" |
-            awk -F, '/PrivateKeyEntry/ {print $1; exit}'
+              awk -F': ' '/Alias name:/ {print $2; exit}'
           )"
 
-          test -n "$ALIAS"
+          test -n "$KEY_ALIAS"
 
-          FP="$(
-            keytool -list -v \
-              -keystore "$KS" \
-              -storetype PKCS12 \
-              -storepass "$KEYSTORE_PASSWORD" \
-              -alias "$ALIAS" |
-            awk '/SHA256:/ {print $2; exit}' |
-            tr -d ':' |
-            tr 'A-F' 'a-f'
-          )"
+          apksigner sign \
+            --ks release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:${KEYSTORE_PASSWORD}" \
+            --out berlions-modified.apk \
+            aligned.apk
 
-          test "${#FP}" -eq 64
-
-          echo "KS_PATH=$KS" >> "$GITHUB_ENV"
-          echo "KS_ALIAS=$ALIAS" >> "$GITHUB_ENV"
-          echo "KS_FP=$FP" >> "$GITHUB_ENV"
-
-      - name: Add SDL touch controls
-        if: ${{ inputs.controls == 'true' }}
+      - name: Final verification
         run: |
-          set -e
+          test -s berlions-modified.apk
 
-          D="android/app/src/main/java/com/raport/redalert"
-          mkdir -p "$D"
-
-          cat > "$D/TouchControls.java" <<'JAVA'
-          package com.raport.redalert;
-
-          import android.app.Activity;
-          import android.graphics.Color;
-          import android.graphics.drawable.GradientDrawable;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.util.TypedValue;
-          import android.view.Gravity;
-          import android.view.MotionEvent;
-          import android.view.View;
-          import android.view.ViewGroup;
-          import android.widget.Button;
-          import android.widget.LinearLayout;
-          import android.widget.RelativeLayout;
-          import org.libsdl.app.SDLActivity;
-
-          final class TouchControls {
-              private final Activity activity;
-              private final ViewGroup layout;
-              private final Handler handler = new Handler(Looper.getMainLooper());
-              private View actions, pad, top;
-              private Button hudButton;
-              private boolean visible = true;
-              private Runnable repeat;
-
-              static void attach(Activity activity, ViewGroup layout, View surface) {
-                  try { new TouchControls(activity, layout, surface); } catch (Throwable ignored) {}
-              }
-
-              private TouchControls(Activity activity, ViewGroup layout, View surface) {
-                  this.activity = activity;
-                  this.layout = layout;
-
-                  RelativeLayout.LayoutParams surfaceLp = new RelativeLayout.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-                  surfaceLp.leftMargin = 0;
-                  surfaceLp.rightMargin = 0;
-                  surface.setLayoutParams(surfaceLp);
-
-                  LinearLayout actionRow = new LinearLayout(activity);
-                  actionRow.setGravity(Gravity.CENTER);
-                  RelativeLayout.LayoutParams actionLp = new RelativeLayout.LayoutParams(
-                      ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
-                  actionLp.addRule(RelativeLayout.CENTER_HORIZONTAL);
-                  actionLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                  actionLp.bottomMargin = dp(6);
-                  layout.addView(actionRow, actionLp);
-                  addCommand(actionRow, "▦\nВсе", 0x21);
-                  addCommand(actionRow, "■\nСтоп", 0x2f);
-                  addCommand(actionRow, "♢\nОхрана", 0x23);
-                  addCommand(actionRow, "×\nОтмена", 0x8e);
-                  actions = actionRow;
-
-                  LinearLayout topRow = new LinearLayout(activity);
-                  topRow.setGravity(Gravity.CENTER_VERTICAL);
-                  RelativeLayout.LayoutParams topLp = new RelativeLayout.LayoutParams(
-                      ViewGroup.LayoutParams.WRAP_CONTENT, dp(54));
-                  topLp.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                  topLp.topMargin = dp(22);
-                  topLp.leftMargin = dp(6);
-                  layout.addView(topRow, topLp);
-                  addPulseButton(topRow, "☰\nМеню", 0x6f);
-                  top = topRow;
-
-                  LinearLayout dpad = new LinearLayout(activity);
-                  dpad.setOrientation(LinearLayout.VERTICAL);
-                  RelativeLayout.LayoutParams dpadLp = new RelativeLayout.LayoutParams(dp(150), dp(104));
-                  dpadLp.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-                  dpadLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-                  dpadLp.leftMargin = dp(6);
-                  dpadLp.bottomMargin = dp(6);
-                  layout.addView(dpad, dpadLp);
-
-                  LinearLayout upRow = new LinearLayout(activity);
-                  upRow.setGravity(Gravity.CENTER);
-                  dpad.addView(upRow, new LinearLayout.LayoutParams(-1, dp(52)));
-                  addRepeatButton(upRow, "↑", 0x13);
-
-                  LinearLayout arrows = new LinearLayout(activity);
-                  arrows.setGravity(Gravity.CENTER);
-                  dpad.addView(arrows, new LinearLayout.LayoutParams(-1, dp(52)));
-                  addRepeatButton(arrows, "←", 0x15);
-                  addRepeatButton(arrows, "↓", 0x14);
-                  addRepeatButton(arrows, "→", 0x16);
-                  pad = dpad;
-
-                  hudButton = makeButton("HUD", 9);
-                  hudButton.setContentDescription("Hide or show controls");
-                  RelativeLayout.LayoutParams hudLp = new RelativeLayout.LayoutParams(dp(48), dp(50));
-                  hudLp.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-                  hudLp.topMargin = dp(22);
-                  hudLp.rightMargin = dp(6);
-                  layout.addView(hudButton, hudLp);
-                  hudButton.setOnClickListener(v -> {
-                      stopRepeat();
-                      visible = !visible;
-                      int state = visible ? View.VISIBLE : View.GONE;
-                      actions.setVisibility(state);
-                      pad.setVisibility(state);
-                      top.setVisibility(state);
-                      hudButton.setAlpha(visible ? 0.80f : 0.45f);
-                  });
-              }
-
-              private void addCommand(LinearLayout row, String text, int keyCode) {
-                  Button b = makeButton(text, 9);
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
-                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
-                  row.addView(b, lp);
-                  b.setOnClickListener(v -> pulse(keyCode));
-              }
-
-              private void addPulseButton(LinearLayout row, String text, int keyCode) {
-                  Button b = makeButton(text, 9);
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
-                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
-                  row.addView(b, lp);
-                  b.setOnClickListener(v -> pulse(keyCode));
-              }
-
-              private void addRepeatButton(LinearLayout row, String text, int keyCode) {
-                  Button b = makeButton(text, 19);
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(50));
-                  lp.leftMargin = dp(1); lp.rightMargin = dp(1);
-                  row.addView(b, lp);
-                  b.setOnTouchListener((v, e) -> {
-                      switch (e.getActionMasked()) {
-                          case MotionEvent.ACTION_DOWN:
-                              stopRepeat(); v.setPressed(true);
-                              repeat = new Runnable() {
-                                  @Override public void run() {
-                                      if (repeat != this) return;
-                                      pulse(keyCode); handler.postDelayed(this, 90);
-                                  }
-                              };
-                              repeat.run(); return true;
-                          case MotionEvent.ACTION_MOVE:
-                              if (e.getX() < 0 || e.getY() < 0 || e.getX() >= v.getWidth() || e.getY() >= v.getHeight()) {
-                                  stopRepeat(); v.setPressed(false);
-                              }
-                              return true;
-                          case MotionEvent.ACTION_UP:
-                          case MotionEvent.ACTION_CANCEL:
-                              stopRepeat(); v.setPressed(false); return true;
-                      }
-                      return true;
-                  });
-              }
-
-              private Button makeButton(String text, int size) {
-                  Button b = new Button(activity);
-                  b.setText(text); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
-                  b.setAllCaps(false); b.setPadding(dp(3), dp(5), dp(3), dp(3));
-                  b.setMinWidth(0); b.setMinimumWidth(0); b.setMinHeight(0); b.setMinimumHeight(0);
-                  b.setTextColor(Color.WHITE); b.setAlpha(0.80f); b.setFocusable(false);
-                  b.setStateListAnimator(null);
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xCC14181D); bg.setCornerRadius(dp(8)); b.setBackground(bg);
-                  return b;
-              }
-
-              private void pulse(int keyCode) {
-                  try { SDLActivity.onNativeKeyDown(keyCode); SDLActivity.onNativeKeyUp(keyCode); }
-                  catch (Throwable ignored) {}
-              }
-
-              private void stopRepeat() {
-                  if (repeat != null) { handler.removeCallbacks(repeat); repeat = null; }
-              }
-
-              private int dp(int v) { return Math.round(v * activity.getResources().getDisplayMetrics().density); }
-          }
-          JAVA
-
-          python3 - <<'PY'
-          p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
-          s = open(p, encoding="utf-8").read()
-          marker = "public class RedAlertActivity extends SDLActivity {"
-          if marker not in s: raise SystemExit("RedAlertActivity class declaration not found")
-          fullscreen = r"""
-              private void configureImmersiveMode() {
-                  android.view.Window w = getWindow();
-                  w.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                  if (android.os.Build.VERSION.SDK_INT >= 28) {
-                      android.view.WindowManager.LayoutParams lp = w.getAttributes();
-                      lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-                      w.setAttributes(lp);
-                  }
-                  android.view.View decor = w.getDecorView();
-                  decor.setSystemUiVisibility(0x1706);
-                  if (android.os.Build.VERSION.SDK_INT >= 30) {
-                      w.setDecorFitsSystemWindows(false);
-                      android.view.WindowInsetsController c = decor.getWindowInsetsController();
-                      if (c != null) {
-                          c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                          c.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
-                      }
-                  }
-              }
-          """
-          if "private void configureImmersiveMode()" not in s:
-              s=s.replace(marker,marker+"\n"+fullscreen,1)
-          needle="super.onCreate(savedInstanceState);"
-          attach="super.onCreate(savedInstanceState);\n        configureImmersiveMode();\n        TouchControls.attach(this, mLayout, mSurface);"
-          if "TouchControls.attach(this, mLayout, mSurface);" not in s:
-              if needle not in s: raise SystemExit("onCreate() not found")
-              s=s.replace(needle,attach,1)
-          open(p,"w",encoding="utf-8").write(s)
-          PY
-
-      # IMPORTANT: Do not force a custom render viewport here.
-      # The game keeps its native/aspect viewport so SDL mouse/touch coordinates
-      # stay aligned with the rendered game surface. Android itself is immersive
-      # fullscreen through RedAlertActivity; changing only the viewport would
-      # make the visible button and the actual game click position diverge.
-
-      - name: Validate fullscreen and controls
-        run: |
-          set -e
-          SRC=android/app/src/main/java/com/raport/redalert/RedAlertActivity.java
-          CTRL=android/app/src/main/java/com/raport/redalert/TouchControls.java
-          grep -q 'FLAG_FULLSCREEN' "$SRC"
-          grep -q 'TouchControls.attach(this, mLayout, mSurface);' "$SRC"
-          grep -q '0x21' "$CTRL"
-          grep -q '0x2f' "$CTRL"
-          grep -q '0x23' "$CTRL"
-          grep -q '0x8e' "$CTRL"
-          grep -q '0x6f' "$CTRL"
-          grep -q '0x13' "$CTRL"
-          grep -q '0x14' "$CTRL"
-          grep -q '0x15' "$CTRL"
-          grep -q '0x16' "$CTRL"
-          ! grep -q 'Помощь' "$CTRL"
-
-      - name: Build APK
-        run: |
-          set -e
-          gradle \
-            -p android \
-            :app:assembleDebug \
-            --no-daemon \
-            --stacktrace
-
-      - name: Sign APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: |
-          set -e
-
-          BT="$ANDROID_HOME/build-tools/36.0.0"
-          OUT="android/app/build/outputs/apk/debug"
-
-          test -f "$OUT/app-debug.apk"
-
-          "$BT/zipalign" \
-            -f -p 4 \
-            "$OUT/app-debug.apk" \
-            "$RUNNER_TEMP/aligned.apk"
-
-          "$BT/apksigner" sign \
-            --ks "$KS_PATH" \
-            --ks-key-alias "$KS_ALIAS" \
-            --ks-pass "env:KEYSTORE_PASSWORD" \
-            --key-pass "env:KEYSTORE_PASSWORD" \
-            --out "$OUT/berlions-signed.apk" \
-            "$RUNNER_TEMP/aligned.apk"
-
-          "$BT/apksigner" verify \
+          apksigner verify \
             --verbose \
             --print-certs \
-            "$OUT/berlions-signed.apk"
+            berlions-modified.apk
 
-      - name: Verify APK
-        run: |
-          set -e
-          APK="android/app/build/outputs/apk/debug/berlions-signed.apk"
+          unzip -t berlions-modified.apk
 
-          test -f "$APK"
-          ls -lh "$APK"
-          sha256sum "$APK"
+          unzip -l berlions-modified.apk | grep \
+            'assets/redalert/allies/INSTALL/REDALERT.INI'
+
+          unzip -l berlions-modified.apk | grep \
+            'lib/arm64-v8a/libmain.so'
+
+          unzip -l berlions-modified.apk | grep \
+            'lib/arm64-v8a/libSDL2.so'
+
+          stat -c "%s bytes" berlions-modified.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: redalert-apk
-          path: android/app/build/outputs/apk/debug/berlions-signed.apk
-          if-no-files-found: error
-          retention-days: 7
+          name: berlions-modified
+          path: berlions-modified.apk
