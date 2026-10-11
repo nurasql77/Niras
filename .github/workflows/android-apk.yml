@@ -586,8 +586,27 @@ jobs:
           PYEOF
           grep -n "MobileTouchCursorHidden = " PORT/MAC/src/mac_sdl_runtime.cpp
 
+      - name: Cover the whole screen (cutout)
+        if: ${{ inputs.stretch == 'true' }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
+          s = open(p, encoding="utf-8").read()
+          old = "attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;"
+          assert s.count(old) == 1, "cutout code not found"
+          new = ("attributes.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30\n"
+                 "                ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS\n"
+                 "                : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;")
+          s = s.replace(old, new, 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "CUTOUT" android/app/src/main/java/com/raport/redalert/RedAlertActivity.java
+
       - name: Fix tap position
         if: ${{ inputs.touch_fix == 'true' }}
+        env:
+          STRETCH: ${{ inputs.stretch }}
         run: |
           set -e
           python3 - <<'PYEOF'
@@ -604,9 +623,24 @@ jobs:
           assert s.count(b) == 1, "finger mapping code not found"
           s = s.replace(b, "\tSDL_GetWindowSize(MacWindow, &window_w, &window_h);\n\tif (MacRenderer) {\n\t\tSDL_GetRendererOutputSize(MacRenderer, &window_w, &window_h);\n\t}\n\tif (window_w <= 0 || window_h <= 0) {", 1)
 
+          # 3) stretched picture fills the whole surface, so a finger position
+          #    (0..1 of the surface) maps straight onto the game's 640x400 screen
+          import os
+          if os.environ.get("STRETCH") == "true":
+              head = ("static bool mobile_logical_point(float normalized_x, float normalized_y, int *logical_x, int *logical_y)\n{\n"
+                      "\tif (!MacWindow || MacWidth <= 0 || MacHeight <= 0) {\n"
+                      "\t\tif (logical_x) *logical_x = 0;\n"
+                      "\t\tif (logical_y) *logical_y = 0;\n"
+                      "\t\treturn false;\n\t}\n")
+              assert s.count(head) == 1, "finger function head not found"
+              direct = ("\tif (logical_x) *logical_x = RA_ClampInt((int)(normalized_x * (float)MacWidth), 0, MacWidth - 1);\n"
+                        "\tif (logical_y) *logical_y = RA_ClampInt((int)(normalized_y * (float)MacHeight), 0, MacHeight - 1);\n"
+                        "\treturn true;\n")
+              s = s.replace(head, head + direct, 1)
+
           open(p, "w", encoding="utf-8").write(s)
           PYEOF
-          grep -n "SDL_GetRendererOutputSize" PORT/MAC/src/mac_sdl_runtime.cpp
+          grep -n "SDL_GetRendererOutputSize\|normalized_x \* (float)MacWidth" PORT/MAC/src/mac_sdl_runtime.cpp
 
       - name: Touch debug crosses
         if: ${{ inputs.touch_debug == 'true' }}
