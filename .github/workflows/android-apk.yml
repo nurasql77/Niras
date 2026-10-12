@@ -1,0 +1,1708 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_file_id:
+        description: "Google Drive APK file ID"
+        required: true
+        default: "14UV16nRMrBgQmKVxNbKrEov7bQXnkjMn"
+      english:
+        description: "Overlay English files"
+        required: true
+        default: "false"
+      app_name:
+        description: "App name"
+        required: true
+        default: "Berlions"
+      controls:
+        description: "Add on-screen buttons (true/false)"
+        required: true
+        default: "true"
+      stretch:
+        description: "Stretch the picture to the full screen (true/false)"
+        required: true
+        default: "true"
+      direct_touch:
+        description: "Direct touch: no mouse pointer on screen (true/false)"
+        required: true
+        default: "true"
+      touch_fix:
+        description: "Fix tap position: use the real drawing surface size (true/false)"
+        required: true
+        default: "true"
+      touch_debug:
+        description: "Diagnostic: draw red/blue crosses at each tap (true/false)"
+        required: true
+        default: "false"
+
+env:
+  NDK_VERSION: "28.2.13676358"
+  CMAKE_VERSION: "3.22.1"
+  GRADLE_VERSION: "9.4.1"
+  SDL_VERSION: "2.32.10"
+
+jobs:
+  apk:
+    name: Build Android APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Accept Android licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK packages
+        run: |
+          set -e
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+          yes | sdkmanager --licenses || true
+          echo "Installed packages:"
+          sdkmanager --list_installed | head -50
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.4.1"
+
+      - name: Check build tools
+        run: |
+          set -e
+          echo "Java:"
+          java -version
+          echo
+          echo "Gradle:"
+          gradle --version
+          echo
+          echo "Android SDK: $ANDROID_HOME"
+          echo
+          echo "NDK check:"
+          ls -la "$ANDROID_HOME/ndk/28.2.13676358" | head -5
+          echo
+          echo "CMake check:"
+          "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version
+
+      - name: Download game data
+        env:
+          FILE_ID: ${{ inputs.drive_file_id }}
+          ENGLISH: ${{ inputs.english }}
+        run: |
+          set -e
+          python3 -m pip install --upgrade gdown
+          echo "Downloading source APK..."
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O source.apk
+          test -s source.apk
+          ls -lh source.apk
+          mkdir -p assets/redalert tmp
+          echo "Extracting Red Alert data..."
+          unzip -q source.apk 'assets/mobsik/*.zip' -d tmp
+          test -f tmp/assets/mobsik/red-alert-data.zip
+          unzip -q -o tmp/assets/mobsik/red-alert-data.zip -d assets/redalert
+          if [ "$ENGLISH" = "true" ]; then
+            echo "Applying English data..."
+            test -f tmp/assets/mobsik/red-alert-data-en.zip
+            unzip -q -o tmp/assets/mobsik/red-alert-data-en.zip -d assets/redalert
+          fi
+          test -f assets/redalert/allies/INSTALL/REDALERT.INI
+          echo "REDALERT.INI found."
+          du -sh assets/redalert
+          rm -rf source.apk tmp
+
+      - name: Download SDL2
+        run: |
+          set -e
+          mkdir -p android/third_party
+          echo "Downloading SDL 2.32.10..."
+          curl -fL "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz" -o /tmp/SDL2.tar.gz
+          test -s /tmp/SDL2.tar.gz
+          tar -xzf /tmp/SDL2.tar.gz -C android/third_party
+          rm -rf android/third_party/SDL
+          mv android/third_party/SDL2-2.32.10 android/third_party/SDL
+          ls -la android/third_party/SDL | head -10
+
+      - name: Check Android project
+        run: |
+          set -e
+          test -f assets/redalert/allies/INSTALL/REDALERT.INI
+          test -f android/app/CMakeLists.txt
+          test -f android/app/build.gradle.kts
+          echo "Project checks passed."
+
+      - name: Set application name
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          set -e
+          sed -i "s|android:label=\"Red Alert\"|android:label=\"${APP_NAME}\"|" android/app/src/main/AndroidManifest.xml
+          grep 'android:label' android/app/src/main/AndroidManifest.xml
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "Add repository secrets KEYSTORE_B64 and KEYSTORE_PASSWORD (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          KS="$RUNNER_TEMP/release.p12"
+          echo "$KEYSTORE_B64" | base64 -d > "$KS"
+          ALIAS=$(keytool -list -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASSWORD" | awk -F, '/PrivateKeyEntry/ {print $1; exit}')
+          test -n "$ALIAS"
+          FP=$(keytool -list -v -keystore "$KS" -storetype PKCS12 -storepass "$KEYSTORE_PASSWORD" -alias "$ALIAS" | awk '/SHA256:/ {print $2; exit}' | tr -d ':' | tr 'A-F' 'a-f')
+          test "${#FP}" -eq 64
+          echo "KS_PATH=$KS" >> "$GITHUB_ENV"
+          echo "KS_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+          echo "KS_FP=$FP" >> "$GITHUB_ENV"
+          printf '#define RA_EXPECTED_CERT_SHA256 "%s"\n' "$FP" > PORT/ANDROID/src/ra_sig_hash.h
+          echo "Certificate SHA-256: $FP"
+
+      - name: Add signature check
+        run: |
+          set -e
+          cat > PORT/ANDROID/src/ra_apk_sig.h <<'APKEOF'
+          #ifndef RA_APK_SIG_H
+          #define RA_APK_SIG_H
+
+          /* Reads the signing certificate straight from the APK file (v2/v3 signing block),
+           * independent of PackageManager. Pure C++98, no Android dependencies. */
+
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          /* ---------------- SHA-256 ---------------- */
+
+          struct RaSha256 {
+              unsigned long state[8];
+              unsigned long long length;
+              unsigned char buffer[64];
+              unsigned int used;
+          };
+
+          static inline unsigned long ra_rotr(unsigned long x, unsigned int n)
+          {
+              return ((x >> n) | (x << (32 - n))) & 0xFFFFFFFFUL;
+          }
+
+          static void ra_sha256_block(RaSha256 *c, unsigned char const *p)
+          {
+              static unsigned long const K[64] = {
+                  0x428a2f98UL,0x71374491UL,0xb5c0fbcfUL,0xe9b5dba5UL,0x3956c25bUL,0x59f111f1UL,0x923f82a4UL,0xab1c5ed5UL,
+                  0xd807aa98UL,0x12835b01UL,0x243185beUL,0x550c7dc3UL,0x72be5d74UL,0x80deb1feUL,0x9bdc06a7UL,0xc19bf174UL,
+                  0xe49b69c1UL,0xefbe4786UL,0x0fc19dc6UL,0x240ca1ccUL,0x2de92c6fUL,0x4a7484aaUL,0x5cb0a9dcUL,0x76f988daUL,
+                  0x983e5152UL,0xa831c66dUL,0xb00327c8UL,0xbf597fc7UL,0xc6e00bf3UL,0xd5a79147UL,0x06ca6351UL,0x14292967UL,
+                  0x27b70a85UL,0x2e1b2138UL,0x4d2c6dfcUL,0x53380d13UL,0x650a7354UL,0x766a0abbUL,0x81c2c92eUL,0x92722c85UL,
+                  0xa2bfe8a1UL,0xa81a664bUL,0xc24b8b70UL,0xc76c51a3UL,0xd192e819UL,0xd6990624UL,0xf40e3585UL,0x106aa070UL,
+                  0x19a4c116UL,0x1e376c08UL,0x2748774cUL,0x34b0bcb5UL,0x391c0cb3UL,0x4ed8aa4aUL,0x5b9cca4fUL,0x682e6ff3UL,
+                  0x748f82eeUL,0x78a5636fUL,0x84c87814UL,0x8cc70208UL,0x90befffaUL,0xa4506cebUL,0xbef9a3f7UL,0xc67178f2UL };
+              unsigned long w[64];
+              for (int i = 0; i < 16; ++i) {
+                  w[i] = ((unsigned long)p[i*4] << 24) | ((unsigned long)p[i*4+1] << 16) |
+                         ((unsigned long)p[i*4+2] << 8) | (unsigned long)p[i*4+3];
+              }
+              for (int i = 16; i < 64; ++i) {
+                  unsigned long s0 = ra_rotr(w[i-15], 7) ^ ra_rotr(w[i-15], 18) ^ (w[i-15] >> 3);
+                  unsigned long s1 = ra_rotr(w[i-2], 17) ^ ra_rotr(w[i-2], 19) ^ (w[i-2] >> 10);
+                  w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xFFFFFFFFUL;
+              }
+              unsigned long a = c->state[0], b = c->state[1], cc = c->state[2], d = c->state[3];
+              unsigned long e = c->state[4], f = c->state[5], g = c->state[6], h = c->state[7];
+              for (int i = 0; i < 64; ++i) {
+                  unsigned long S1 = ra_rotr(e, 6) ^ ra_rotr(e, 11) ^ ra_rotr(e, 25);
+                  unsigned long ch = (e & f) ^ ((~e) & g);
+                  unsigned long t1 = (h + S1 + ch + K[i] + w[i]) & 0xFFFFFFFFUL;
+                  unsigned long S0 = ra_rotr(a, 2) ^ ra_rotr(a, 13) ^ ra_rotr(a, 22);
+                  unsigned long maj = (a & b) ^ (a & cc) ^ (b & cc);
+                  unsigned long t2 = (S0 + maj) & 0xFFFFFFFFUL;
+                  h = g; g = f; f = e; e = (d + t1) & 0xFFFFFFFFUL;
+                  d = cc; cc = b; b = a; a = (t1 + t2) & 0xFFFFFFFFUL;
+              }
+              c->state[0] = (c->state[0] + a) & 0xFFFFFFFFUL; c->state[1] = (c->state[1] + b) & 0xFFFFFFFFUL;
+              c->state[2] = (c->state[2] + cc) & 0xFFFFFFFFUL; c->state[3] = (c->state[3] + d) & 0xFFFFFFFFUL;
+              c->state[4] = (c->state[4] + e) & 0xFFFFFFFFUL; c->state[5] = (c->state[5] + f) & 0xFFFFFFFFUL;
+              c->state[6] = (c->state[6] + g) & 0xFFFFFFFFUL; c->state[7] = (c->state[7] + h) & 0xFFFFFFFFUL;
+          }
+
+          static void ra_sha256_init(RaSha256 *c)
+          {
+              c->state[0] = 0x6a09e667UL; c->state[1] = 0xbb67ae85UL; c->state[2] = 0x3c6ef372UL; c->state[3] = 0xa54ff53aUL;
+              c->state[4] = 0x510e527fUL; c->state[5] = 0x9b05688cUL; c->state[6] = 0x1f83d9abUL; c->state[7] = 0x5be0cd19UL;
+              c->length = 0;
+              c->used = 0;
+          }
+
+          static void ra_sha256_update(RaSha256 *c, unsigned char const *data, size_t len)
+          {
+              for (size_t i = 0; i < len; ++i) {
+                  c->buffer[c->used++] = data[i];
+                  if (c->used == 64) {
+                      ra_sha256_block(c, c->buffer);
+                      c->used = 0;
+                  }
+              }
+              c->length += (unsigned long long)len;
+          }
+
+          static void ra_sha256_final(RaSha256 *c, char hex_out[65])
+          {
+              static char const *hex = "0123456789abcdef";
+              unsigned long long bits = c->length * 8ULL;
+              unsigned char pad = 0x80;
+              ra_sha256_update(c, &pad, 1);
+              pad = 0;
+              while (c->used != 56) {
+                  ra_sha256_update(c, &pad, 1);
+              }
+              unsigned char len_bytes[8];
+              for (int i = 0; i < 8; ++i) {
+                  len_bytes[i] = (unsigned char)((bits >> (56 - 8 * i)) & 0xFF);
+              }
+              ra_sha256_update(c, len_bytes, 8);
+              for (int i = 0; i < 8; ++i) {
+                  for (int j = 0; j < 4; ++j) {
+                      unsigned char b = (unsigned char)((c->state[i] >> (24 - 8 * j)) & 0xFF);
+                      hex_out[i * 8 + j * 2] = hex[b >> 4];
+                      hex_out[i * 8 + j * 2 + 1] = hex[b & 15];
+                  }
+              }
+              hex_out[64] = 0;
+          }
+
+          /* ---------------- APK signing block ---------------- */
+
+          static unsigned long ra_u32(unsigned char const *p)
+          {
+              return (unsigned long)p[0] | ((unsigned long)p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+          }
+
+          static unsigned long long ra_u64(unsigned char const *p)
+          {
+              return (unsigned long long)ra_u32(p) | ((unsigned long long)ra_u32(p + 4) << 32);
+          }
+
+          /* On success writes the lowercase hex SHA-256 of the signer certificate and returns true.
+           * Fails (false) when the APK has no v2/v3 block or more than one signer. */
+          static bool ra_apk_cert_sha256(char const *path, char hex_out[65])
+          {
+              FILE *f = fopen(path, "rb");
+              if (!f) {
+                  return false;
+              }
+              bool ok = false;
+              unsigned char *block = 0;
+              do {
+                  if (fseek(f, 0, SEEK_END) != 0) break;
+                  long file_size = ftell(f);
+                  if (file_size < 22) break;
+
+                  long tail_len = file_size < 65557L ? file_size : 65557L;
+                  unsigned char *tail = (unsigned char *)malloc((size_t)tail_len);
+                  if (!tail) break;
+                  bool tail_ok = fseek(f, file_size - tail_len, SEEK_SET) == 0 &&
+                      fread(tail, 1, (size_t)tail_len, f) == (size_t)tail_len;
+                  long eocd = -1;
+                  if (tail_ok) {
+                      for (long i = tail_len - 22; i >= 0; --i) {
+                          if (tail[i] == 0x50 && tail[i+1] == 0x4b && tail[i+2] == 0x05 && tail[i+3] == 0x06) {
+                              eocd = i;
+                              break;
+                          }
+                      }
+                  }
+                  unsigned long cd_offset = eocd >= 0 ? ra_u32(tail + eocd + 16) : 0;
+                  free(tail);
+                  if (eocd < 0 || cd_offset < 32 || (long)cd_offset > file_size) break;
+
+                  unsigned char footer[24];
+                  if (fseek(f, (long)cd_offset - 24, SEEK_SET) != 0 || fread(footer, 1, 24, f) != 24) break;
+                  if (memcmp(footer + 8, "APK Sig Block 42", 16) != 0) break;
+                  unsigned long long block_size = ra_u64(footer);
+                  if (block_size < 24 + 12 || block_size > 16ULL * 1024 * 1024 || block_size + 8 > cd_offset) break;
+
+                  size_t pairs_len = (size_t)(block_size - 24);
+                  block = (unsigned char *)malloc(pairs_len);
+                  if (!block) break;
+                  long pairs_start = (long)(cd_offset - block_size - 8 + 8);
+                  if (fseek(f, pairs_start, SEEK_SET) != 0 || fread(block, 1, pairs_len, f) != pairs_len) break;
+
+                  unsigned char const *value = 0;
+                  size_t value_len = 0;
+                  unsigned long found_id = 0;
+                  size_t off = 0;
+                  while (off + 12 <= pairs_len) {
+                      unsigned long long len = ra_u64(block + off);
+                      if (len < 4 || len > pairs_len - off - 8) break;
+                      unsigned long id = ra_u32(block + off + 8);
+                      if (id == 0xf05368c0UL || (id == 0x7109871aUL && found_id != 0xf05368c0UL)) {
+                          found_id = id;
+                          value = block + off + 12;
+                          value_len = (size_t)(len - 4);
+                      }
+                      off += 8 + (size_t)len;
+                  }
+                  if (!value || value_len < 8) break;
+
+                  /* signers: u32 length, then signer entries (exactly one allowed) */
+                  unsigned long signers_len = ra_u32(value);
+                  if (signers_len + 4 > value_len) break;
+                  unsigned char const *signer_p = value + 4;
+                  if (signers_len < 4) break;
+                  unsigned long signer_len = ra_u32(signer_p);
+                  if (signer_len + 4 != signers_len) break;           /* one signer only */
+                  unsigned char const *signed_p = signer_p + 4;
+                  if (signer_len < 4) break;
+                  unsigned long signed_len = ra_u32(signed_p);
+                  if (signed_len + 4 > signer_len) break;
+                  unsigned char const *sd = signed_p + 4;
+                  /* signed data: digests (u32 len + data), certificates (u32 len + data) */
+                  if (signed_len < 8) break;
+                  unsigned long digests_len = ra_u32(sd);
+                  if (digests_len + 8 > signed_len) break;
+                  unsigned char const *certs_p = sd + 4 + digests_len;
+                  unsigned long certs_len = ra_u32(certs_p);
+                  if (certs_len + 4 + 4 + digests_len > signed_len) break;
+                  if (certs_len < 4) break;
+                  unsigned long cert_len = ra_u32(certs_p + 4);
+                  if (cert_len + 4 != certs_len) break;               /* one certificate only */
+
+                  RaSha256 ctx;
+                  ra_sha256_init(&ctx);
+                  ra_sha256_update(&ctx, certs_p + 8, cert_len);
+                  ra_sha256_final(&ctx, hex_out);
+                  ok = true;
+              } while (0);
+              free(block);
+              fclose(f);
+              return ok;
+          }
+
+          #endif
+          APKEOF
+          cat > PORT/ANDROID/src/ra_signature_check.h <<'SIGEOF'
+          #ifndef RA_SIGNATURE_CHECK_H
+          #define RA_SIGNATURE_CHECK_H
+
+          /* Generated by the build workflow: RA_EXPECTED_CERT_SHA256 = hex SHA-256 of the signing certificate. */
+          #include "ra_sig_hash.h"
+          #include "ra_apk_sig.h"
+
+          #include <SDL.h>
+          #include <jni.h>
+          #include <android/log.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          static bool ra_sig_clear(JNIEnv *env)
+          {
+              if (env->ExceptionCheck()) {
+                  env->ExceptionClear();
+                  return true;
+              }
+              return false;
+          }
+
+          static bool ra_sig_hash_matches(JNIEnv *env, jobject signature)
+          {
+              static char const *hex = "0123456789abcdef";
+              jclass sig_cls = env->GetObjectClass(signature);
+              jmethodID to_bytes = env->GetMethodID(sig_cls, "toByteArray", "()[B");
+              jbyteArray cert = (jbyteArray)env->CallObjectMethod(signature, to_bytes);
+              if (ra_sig_clear(env) || !cert) {
+                  return false;
+              }
+              jclass md_cls = env->FindClass("java/security/MessageDigest");
+              jmethodID get_instance = env->GetStaticMethodID(md_cls, "getInstance",
+                  "(Ljava/lang/String;)Ljava/security/MessageDigest;");
+              jstring algorithm = env->NewStringUTF("SHA-256");
+              jobject md = env->CallStaticObjectMethod(md_cls, get_instance, algorithm);
+              if (ra_sig_clear(env) || !md) {
+                  return false;
+              }
+              jmethodID digest = env->GetMethodID(md_cls, "digest", "([B)[B");
+              jbyteArray hash = (jbyteArray)env->CallObjectMethod(md, digest, cert);
+              if (ra_sig_clear(env) || !hash || env->GetArrayLength(hash) != 32) {
+                  return false;
+              }
+              jbyte bytes[32];
+              env->GetByteArrayRegion(hash, 0, 32, bytes);
+              char text[65];
+              for (int i = 0; i < 32; ++i) {
+                  unsigned char b = (unsigned char)bytes[i];
+                  text[i * 2] = hex[b >> 4];
+                  text[i * 2 + 1] = hex[b & 15];
+              }
+              text[64] = 0;
+              return strcmp(text, RA_EXPECTED_CERT_SHA256) == 0;
+          }
+
+          static bool ra_pm_signature_ok(JNIEnv *env, jobject activity)
+          {
+              jclass act_cls = env->GetObjectClass(activity);
+              jmethodID get_pm = env->GetMethodID(act_cls, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+              jmethodID get_pkg = env->GetMethodID(act_cls, "getPackageName", "()Ljava/lang/String;");
+              jobject pm = env->CallObjectMethod(activity, get_pm);
+              jstring pkg = (jstring)env->CallObjectMethod(activity, get_pkg);
+              if (ra_sig_clear(env) || !pm || !pkg) {
+                  return false;
+              }
+              jclass pm_cls = env->GetObjectClass(pm);
+              jmethodID get_pi = env->GetMethodID(pm_cls, "getPackageInfo",
+                  "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
+
+              /* Android 9+ : PackageInfo.signingInfo (GET_SIGNING_CERTIFICATES = 0x08000000) */
+              jobject info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x08000000);
+              if (!ra_sig_clear(env) && info) {
+                  jclass info_cls = env->GetObjectClass(info);
+                  jfieldID si_field = env->GetFieldID(info_cls, "signingInfo", "Landroid/content/pm/SigningInfo;");
+                  if (!ra_sig_clear(env) && si_field) {
+                      jobject si = env->GetObjectField(info, si_field);
+                      if (si) {
+                          jclass si_cls = env->GetObjectClass(si);
+                          jmethodID get_signers = env->GetMethodID(si_cls, "getApkContentsSigners",
+                              "()[Landroid/content/pm/Signature;");
+                          jobjectArray signers = (jobjectArray)env->CallObjectMethod(si, get_signers);
+                          if (!ra_sig_clear(env) && signers && env->GetArrayLength(signers) == 1) {
+                              jobject one = env->GetObjectArrayElement(signers, 0);
+                              return one && ra_sig_hash_matches(env, one);
+                          }
+                          return false;
+                      }
+                  }
+              }
+
+              /* Older Android: PackageInfo.signatures (GET_SIGNATURES = 0x40) */
+              info = env->CallObjectMethod(pm, get_pi, pkg, (jint)0x40);
+              if (ra_sig_clear(env) || !info) {
+                  return false;
+              }
+              jclass info_cls = env->GetObjectClass(info);
+              jfieldID sigs_field = env->GetFieldID(info_cls, "signatures", "[Landroid/content/pm/Signature;");
+              if (ra_sig_clear(env) || !sigs_field) {
+                  return false;
+              }
+              jobjectArray sigs = (jobjectArray)env->GetObjectField(info, sigs_field);
+              if (!sigs || env->GetArrayLength(sigs) != 1) {
+                  return false;
+              }
+              jobject one = env->GetObjectArrayElement(sigs, 0);
+              return one && ra_sig_hash_matches(env, one);
+          }
+
+          static bool ra_file_signature_ok(JNIEnv *env, jobject activity)
+          {
+              jclass act_cls = env->GetObjectClass(activity);
+              jmethodID get_path = env->GetMethodID(act_cls, "getPackageCodePath", "()Ljava/lang/String;");
+              jstring path = (jstring)env->CallObjectMethod(activity, get_path);
+              if (ra_sig_clear(env) || !path) {
+                  return false;
+              }
+              char const *utf = env->GetStringUTFChars(path, 0);
+              if (!utf) {
+                  return false;
+              }
+              char hex[65];
+              bool ok = ra_apk_cert_sha256(utf, hex) && strcmp(hex, RA_EXPECTED_CERT_SHA256) == 0;
+              env->ReleaseStringUTFChars(path, utf);
+              return ok;
+          }
+
+          static bool ra_signature_ok(void)
+          {
+              JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+              jobject activity = (jobject)SDL_AndroidGetActivity();
+              if (!env || !activity) {
+                  return false;
+              }
+              /* Both must agree: the certificate read straight from the APK file and the one PackageManager reports. */
+              return ra_file_signature_ok(env, activity) && ra_pm_signature_ok(env, activity);
+          }
+
+          static void ra_verify_signature_or_exit(void)
+          {
+              if (!ra_signature_ok()) {
+                  __android_log_print(ANDROID_LOG_ERROR, "RedAlert", "Invalid APK signature");
+                  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Berlions", "Invalid APK signature", NULL);
+                  exit(1);
+              }
+          }
+
+          #endif
+          SIGEOF
+          python3 - <<'PYEOF'
+          p = "PORT/ANDROID/src/android_main.cpp"
+          s = open(p, encoding="utf-8").read()
+          a = "#include <windows.h>"
+          b = "    select_resource_root();"
+          assert a in s and b in s
+          s = s.replace(a, a + '\n#include "ra_signature_check.h"', 1)
+          s = s.replace(b, "    ra_verify_signature_or_exit();\n" + b, 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "ra_" PORT/ANDROID/src/android_main.cpp
+
+      - name: Full height picture (400 lines)
+        if: ${{ inputs.stretch == 'true' }}
+        run: |
+          set -e
+          for f in assets/redalert/*/INSTALL/REDALERT.INI; do
+            sed -i 's/^Resolution=[0-9a-zA-Z]*/Resolution=0/' "$f"
+            grep -n '^Resolution' "$f"
+          done
+
+      - name: Stretch to full screen
+        if: ${{ inputs.stretch == 'true' }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "PORT/MAC/include/ra_aspect_viewport.h"
+          s = open(p, encoding="utf-8").read()
+          needle = "\tif ((long long)target_w * source_h > (long long)target_h * source_w) {"
+          assert needle in s, "viewport code not found"
+          stretch = "\tviewport.x = 0;\n\tviewport.y = 0;\n\tviewport.w = target_w;\n\tviewport.h = target_h;\n\treturn viewport;\n\n"
+          s = s.replace(needle, stretch + needle, 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "viewport.w = target_w" PORT/MAC/include/ra_aspect_viewport.h
+
+      - name: Direct touch (no mouse pointer)
+        if: ${{ inputs.direct_touch == 'true' }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "PORT/MAC/src/mac_sdl_runtime.cpp"
+          s = open(p, encoding="utf-8").read()
+          needle = "MobileTouchCursorHidden = false;"
+          assert s.count(needle) == 2, "unexpected cursor code: %d" % s.count(needle)
+          s = s.replace(needle, "MobileTouchCursorHidden = true;")
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "MobileTouchCursorHidden = " PORT/MAC/src/mac_sdl_runtime.cpp
+
+      - name: Cover the whole screen (cutout)
+        if: ${{ inputs.stretch == 'true' }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
+          s = open(p, encoding="utf-8").read()
+          old = "attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;"
+          assert s.count(old) == 1, "cutout code not found"
+          new = ("attributes.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30\n"
+                 "                ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS\n"
+                 "                : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;")
+          s = s.replace(old, new, 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "CUTOUT" android/app/src/main/java/com/raport/redalert/RedAlertActivity.java
+
+      - name: Fix tap position
+        if: ${{ inputs.touch_fix == 'true' }}
+        env:
+          STRETCH: ${{ inputs.stretch }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "PORT/MAC/src/mac_sdl_runtime.cpp"
+          s = open(p, encoding="utf-8").read()
+
+          # 1) mouse path
+          a = "\t\tSDL_GetWindowSize(MacWindow, &window_w, &window_h);\n\t}\n\treturn RA_CalculateAspectViewport(MacWidth, MacHeight, window_w, window_h);"
+          assert s.count(a) == 1, "mouse mapping code not found"
+          s = s.replace(a, "\t\tSDL_GetWindowSize(MacWindow, &window_w, &window_h);\n\t}\n\tif (MacRenderer) {\n\t\tSDL_GetRendererOutputSize(MacRenderer, &window_w, &window_h);\n\t}\n\treturn RA_CalculateAspectViewport(MacWidth, MacHeight, window_w, window_h);", 1)
+
+          # 2) finger path
+          b = "\tSDL_GetWindowSize(MacWindow, &window_w, &window_h);\n\tif (window_w <= 0 || window_h <= 0) {"
+          assert s.count(b) == 1, "finger mapping code not found"
+          s = s.replace(b, "\tSDL_GetWindowSize(MacWindow, &window_w, &window_h);\n\tif (MacRenderer) {\n\t\tSDL_GetRendererOutputSize(MacRenderer, &window_w, &window_h);\n\t}\n\tif (window_w <= 0 || window_h <= 0) {", 1)
+
+          # 3) stretched picture fills the whole surface, so a finger position
+          #    (0..1 of the surface) maps straight onto the game's 640x400 screen
+          import os
+          if os.environ.get("STRETCH") == "true":
+              head = ("static bool mobile_logical_point(float normalized_x, float normalized_y, int *logical_x, int *logical_y)\n{\n"
+                      "\tif (!MacWindow || MacWidth <= 0 || MacHeight <= 0) {\n"
+                      "\t\tif (logical_x) *logical_x = 0;\n"
+                      "\t\tif (logical_y) *logical_y = 0;\n"
+                      "\t\treturn false;\n\t}\n")
+              assert s.count(head) == 1, "finger function head not found"
+              direct = ("\tif (logical_x) *logical_x = RA_ClampInt((int)(normalized_x * (float)MacWidth), 0, MacWidth - 1);\n"
+                        "\tif (logical_y) *logical_y = RA_ClampInt((int)(normalized_y * (float)MacHeight), 0, MacHeight - 1);\n"
+                        "\treturn true;\n")
+              s = s.replace(head, head + direct, 1)
+
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "SDL_GetRendererOutputSize\|normalized_x \* (float)MacWidth" PORT/MAC/src/mac_sdl_runtime.cpp
+
+      - name: Touch debug crosses
+        if: ${{ inputs.touch_debug == 'true' }}
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          p = "PORT/MAC/src/mac_sdl_runtime.cpp"
+          s = open(p, encoding="utf-8").read()
+
+          def once(text, needle):
+              assert text.count(needle) == 1, "not found once: " + needle[:40]
+
+          a = "static POINT MacMousePoint = {0, 0};"
+          once(s, a)
+          s = s.replace(a, a + "\nstatic int DbgLogicalX = -1;\nstatic int DbgLogicalY = -1;\nstatic float DbgRawX = -1.0f;\nstatic float DbgRawY = -1.0f;\nstatic Uint32 DbgTick = 0;", 1)
+
+          b = "static void mac_queue_mouse_button_with_cursor(int vk, bool down, int x, int y, bool update_cursor)\n{\n"
+          once(s, b)
+          s = s.replace(b, b + "\tDbgLogicalX = x;\n\tDbgLogicalY = y;\n\tDbgTick = SDL_GetTicks() | 1;\n", 1)
+
+          c = "\t\t\tcase SDL_FINGERDOWN: {\n"
+          once(s, c)
+          s = s.replace(c, c + "\t\t\t\tDbgRawX = event.tfinger.x;\n\t\t\t\tDbgRawY = event.tfinger.y;\n", 1)
+
+          d = "\tSDL_RenderCopy(MacRenderer, MacTexture, 0, &destination);\n\tSDL_RenderPresent(MacRenderer);"
+          once(s, d)
+          draw = (
+              "\tSDL_RenderCopy(MacRenderer, MacTexture, 0, &destination);\n"
+              "\tif (DbgTick != 0) {\n"
+              "\t\tint out_w = 0;\n\t\tint out_h = 0;\n"
+              "\t\tSDL_GetRendererOutputSize(MacRenderer, &out_w, &out_h);\n"
+              "\t\tSDL_Rect bar;\n"
+              "\t\tint rx = destination.x + DbgLogicalX * destination.w / width;\n"
+              "\t\tint ry = destination.y + DbgLogicalY * destination.h / height;\n"
+              "\t\tSDL_SetRenderDrawColor(MacRenderer, 255, 0, 0, 255);\n"
+              "\t\tbar.x = rx - 40; bar.y = ry - 2; bar.w = 80; bar.h = 4;\n"
+              "\t\tSDL_RenderFillRect(MacRenderer, &bar);\n"
+              "\t\tbar.x = rx - 2; bar.y = ry - 40; bar.w = 4; bar.h = 80;\n"
+              "\t\tSDL_RenderFillRect(MacRenderer, &bar);\n"
+              "\t\tint bx = (int)(DbgRawX * (float)out_w);\n"
+              "\t\tint by = (int)(DbgRawY * (float)out_h);\n"
+              "\t\tSDL_SetRenderDrawColor(MacRenderer, 0, 160, 255, 255);\n"
+              "\t\tbar.x = bx - 40; bar.y = by - 2; bar.w = 80; bar.h = 4;\n"
+              "\t\tSDL_RenderFillRect(MacRenderer, &bar);\n"
+              "\t\tbar.x = bx - 2; bar.y = by - 40; bar.w = 4; bar.h = 80;\n"
+              "\t\tSDL_RenderFillRect(MacRenderer, &bar);\n"
+              "\t}\n"
+              "\tSDL_RenderPresent(MacRenderer);"
+          )
+          s = s.replace(d, draw, 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "DbgTick" PORT/MAC/src/mac_sdl_runtime.cpp | head
+
+      - name: Add touch controls
+        if: ${{ inputs.controls == 'true' }}
+        run: |
+          set -e
+          D=android/app/src/main/java/com/raport/redalert
+          cat > "$D/TouchControls.java" <<'JAVAEOF'
+          package com.raport.redalert;
+
+          import android.app.Activity;
+          import android.app.Dialog;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.BitmapShader;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.RectF;
+          import android.graphics.Shader;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.SystemClock;
+          import android.util.DisplayMetrics;
+          import android.util.Log;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.InputDevice;
+          import android.view.KeyCharacterMap;
+          import android.view.KeyEvent;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.Window;
+          import android.view.WindowManager;
+          import android.widget.FrameLayout;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import org.libsdl.app.SDLActivity;
+
+          /** On-screen buttons that send the game's own hotkeys, plus the "about" dialog. */
+          final class TouchControls {
+              private static final String TAG = "TouchControls";
+              private static final String CHANNEL_URL = "https://t.me/android_port";
+
+              private static final int I_MENU = 0;
+              private static final int I_HUD = 1;
+              private static final int I_INFO = 2;
+              private static final int I_UP = 3;
+              private static final int I_DOWN = 4;
+              private static final int I_LEFT = 5;
+              private static final int I_RIGHT = 6;
+              private static final int I_ALL = 7;
+              private static final int I_STOP = 8;
+              private static final int I_GUARD = 9;
+              private static final int I_CANCEL = 10;
+
+              private final Activity activity;
+              private final FrameLayout panel;
+
+              static void attach(final Activity activity) {
+                  try {
+                      final TouchControls controls = new TouchControls(activity);
+                      activity.getWindow().getDecorView().post(new Runnable() {
+                          @Override
+                          public void run() {
+                              controls.showAbout();
+                          }
+                      });
+                  } catch (Throwable t) {
+                      Log.e(TAG, "Touch controls failed to attach", t);
+                  }
+              }
+
+              private TouchControls(Activity a) {
+                  activity = a;
+                  FrameLayout root = new FrameLayout(a);
+                  panel = new FrameLayout(a);
+                  root.addView(panel, new FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  int cell = dp(42);
+                  int gap = dp(4);
+                  int left = dp(10);
+                  int bottom = dp(10);
+                  int actionW = dp(58);
+
+                  // Left column: Menu, HUD, About (below the mission text line)
+                  panel.addView(keyButton(I_MENU, null, KeyEvent.KEYCODE_ESCAPE, false),
+                      params(cell, cell, Gravity.TOP | Gravity.START, left, dp(36), 0, 0));
+
+                  Btn hud = new Btn(a, I_HUD, null, false);
+                  hud.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          int action = e.getAction();
+                          if (action == MotionEvent.ACTION_DOWN) {
+                              ((Btn) v).setDown(true);
+                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                              ((Btn) v).setDown(false);
+                              if (action == MotionEvent.ACTION_UP) {
+                                  panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                              }
+                          }
+                          return true;
+                      }
+                  });
+                  root.addView(hud, params(cell, cell, Gravity.TOP | Gravity.START, left, dp(36) + cell + gap, 0, 0));
+
+                  Btn info = new Btn(a, I_INFO, null, false);
+                  info.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          int action = e.getAction();
+                          if (action == MotionEvent.ACTION_DOWN) {
+                              ((Btn) v).setDown(true);
+                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                              ((Btn) v).setDown(false);
+                              if (action == MotionEvent.ACTION_UP) {
+                                  showAbout();
+                              }
+                          }
+                          return true;
+                      }
+                  });
+                  panel.addView(info, params(cell, cell, Gravity.TOP | Gravity.START, left, dp(36) + 2 * (cell + gap), 0, 0));
+
+                  // Bottom-left: scroll pad (arrow keys)
+                  panel.addView(keyButton(I_LEFT, null, KeyEvent.KEYCODE_DPAD_LEFT, false),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left, 0, 0, bottom));
+                  panel.addView(keyButton(I_DOWN, null, KeyEvent.KEYCODE_DPAD_DOWN, false),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom));
+                  panel.addView(keyButton(I_RIGHT, null, KeyEvent.KEYCODE_DPAD_RIGHT, false),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + 2 * (cell + gap), 0, 0, bottom));
+                  panel.addView(keyButton(I_UP, null, KeyEvent.KEYCODE_DPAD_UP, false),
+                      params(cell, cell, Gravity.BOTTOM | Gravity.START, left + cell + gap, 0, 0, bottom + cell + gap));
+
+                  // Bottom: All / Stop / Guard / Cancel
+                  LinearLayout row = new LinearLayout(a);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.addView(keyButton(I_ALL, "\u0412\u0441\u0435", KeyEvent.KEYCODE_E, true), rowParams(actionW, cell, gap));
+                  row.addView(keyButton(I_STOP, "\u0421\u0442\u043e\u043f", KeyEvent.KEYCODE_S, true), rowParams(actionW, cell, gap));
+                  row.addView(keyButton(I_GUARD, "\u041e\u0445\u0440\u0430\u043d\u0430", KeyEvent.KEYCODE_G, true), rowParams(actionW, cell, gap));
+
+                  Btn cancel = new Btn(a, I_CANCEL, "\u041e\u0442\u043c\u0435\u043d\u0430", true);
+                  cancel.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          int action = e.getAction();
+                          if (action == MotionEvent.ACTION_DOWN) {
+                              ((Btn) v).setDown(true);
+                              rightClick();
+                          } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                              ((Btn) v).setDown(false);
+                          }
+                          return true;
+                      }
+                  });
+                  row.addView(cancel, rowParams(actionW, cell, gap));
+
+                  int screenW = a.getResources().getDisplayMetrics().widthPixels;
+                  panel.addView(row, params(ViewGroup.LayoutParams.WRAP_CONTENT, cell,
+                      Gravity.BOTTOM | Gravity.START, (int) (screenW * 0.26f), 0, 0, bottom));
+
+                  a.addContentView(root, new ViewGroup.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              }
+
+              // ---------------------------------------------------------------- buttons
+
+              private Btn keyButton(int icon, String label, final int keyCode, boolean action) {
+                  Btn b = new Btn(activity, icon, label, action);
+                  b.setOnTouchListener(new View.OnTouchListener() {
+                      @Override
+                      public boolean onTouch(View v, MotionEvent e) {
+                          int a = e.getAction();
+                          if (a == MotionEvent.ACTION_DOWN) {
+                              ((Btn) v).setDown(true);
+                              sendKey(keyCode, true);
+                          } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                              ((Btn) v).setDown(false);
+                              sendKey(keyCode, false);
+                          }
+                          return true;
+                      }
+                  });
+                  return b;
+              }
+
+              /** A flat, translucent button with a drawn icon (and an optional label). */
+              static final class Btn extends View {
+                  private final int icon;
+                  private final String label;
+                  private final boolean action;
+                  private final float d;
+                  private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final RectF rect = new RectF();
+                  private final Path path = new Path();
+                  private boolean down;
+
+                  Btn(Context context, int icon, String label, boolean action) {
+                      super(context);
+                      this.icon = icon;
+                      this.label = label;
+                      this.action = action;
+                      this.d = context.getResources().getDisplayMetrics().density;
+                  }
+
+                  void setDown(boolean value) {
+                      down = value;
+                      invalidate();
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas canvas) {
+                      float w = getWidth();
+                      float h = getHeight();
+                      float r = 9f * d;
+                      rect.set(d, d, w - d, h - d);
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(down ? 0xCCC0392B : 0x8014181E);
+                      canvas.drawRoundRect(rect, r, r, paint);
+                      paint.setStyle(Paint.Style.STROKE);
+                      paint.setStrokeWidth(d);
+                      paint.setColor(0x33FFFFFF);
+                      canvas.drawRoundRect(rect, r, r, paint);
+
+                      if (action) {
+                          paint.setStyle(Paint.Style.FILL);
+                          paint.setColor(0xFFC0392B);
+                          rect.set(w * 0.2f, h - 4f * d, w * 0.8f, h - 2f * d);
+                          canvas.drawRoundRect(rect, d, d, paint);
+                      }
+
+                      float cx = w / 2f;
+                      float cy = label != null ? h * 0.36f : h * 0.5f;
+                      float s = Math.min(w, h) * (label != null ? 0.17f : 0.21f) * 1.6f;
+                      paint.setColor(0xFFEEF2F5);
+                      drawIcon(canvas, cx, cy, s);
+
+                      if (label != null) {
+                          paint.setStyle(Paint.Style.FILL);
+                          paint.setColor(0xFFEEF2F5);
+                          paint.setTextAlign(Paint.Align.CENTER);
+                          paint.setTextSize(10f * d);
+                          paint.setFakeBoldText(true);
+                          canvas.drawText(label, cx, h - 8.5f * d, paint);
+                          paint.setFakeBoldText(false);
+                          paint.setTextAlign(Paint.Align.LEFT);
+                      }
+                  }
+
+                  private void drawIcon(Canvas c, float cx, float cy, float s) {
+                      paint.setStyle(Paint.Style.STROKE);
+                      paint.setStrokeWidth(Math.max(1.5f * d, s * 0.22f));
+                      paint.setStrokeCap(Paint.Cap.ROUND);
+                      paint.setStrokeJoin(Paint.Join.ROUND);
+                      switch (icon) {
+                          case I_MENU:
+                              c.drawLine(cx - s, cy - s * 0.6f, cx + s, cy - s * 0.6f, paint);
+                              c.drawLine(cx - s, cy, cx + s, cy, paint);
+                              c.drawLine(cx - s, cy + s * 0.6f, cx + s, cy + s * 0.6f, paint);
+                              break;
+                          case I_HUD:
+                              rect.set(cx - s, cy - s * 0.75f, cx + s, cy + s * 0.75f);
+                              c.drawRoundRect(rect, s * 0.2f, s * 0.2f, paint);
+                              c.drawLine(cx + s * 0.3f, cy - s * 0.75f, cx + s * 0.3f, cy + s * 0.75f, paint);
+                              break;
+                          case I_INFO:
+                              c.drawCircle(cx, cy, s, paint);
+                              c.drawLine(cx, cy - s * 0.05f, cx, cy + s * 0.5f, paint);
+                              paint.setStyle(Paint.Style.FILL);
+                              c.drawCircle(cx, cy - s * 0.45f, Math.max(1.2f * d, s * 0.13f), paint);
+                              break;
+                          case I_UP:
+                              triangle(c, cx, cy - s * 0.8f, cx + s * 0.9f, cy + s * 0.6f, cx - s * 0.9f, cy + s * 0.6f);
+                              break;
+                          case I_DOWN:
+                              triangle(c, cx, cy + s * 0.8f, cx + s * 0.9f, cy - s * 0.6f, cx - s * 0.9f, cy - s * 0.6f);
+                              break;
+                          case I_LEFT:
+                              triangle(c, cx - s * 0.8f, cy, cx + s * 0.6f, cy - s * 0.9f, cx + s * 0.6f, cy + s * 0.9f);
+                              break;
+                          case I_RIGHT:
+                              triangle(c, cx + s * 0.8f, cy, cx - s * 0.6f, cy - s * 0.9f, cx - s * 0.6f, cy + s * 0.9f);
+                              break;
+                          case I_ALL:
+                              for (int i = 0; i < 2; i++) {
+                                  for (int j = 0; j < 2; j++) {
+                                      float x0 = cx + (i == 0 ? -s : s * 0.1f);
+                                      float y0 = cy + (j == 0 ? -s : s * 0.1f);
+                                      rect.set(x0, y0, x0 + s * 0.9f, y0 + s * 0.9f);
+                                      c.drawRoundRect(rect, s * 0.15f, s * 0.15f, paint);
+                                  }
+                              }
+                              break;
+                          case I_STOP:
+                              paint.setStyle(Paint.Style.FILL);
+                              rect.set(cx - s * 0.8f, cy - s * 0.8f, cx + s * 0.8f, cy + s * 0.8f);
+                              c.drawRoundRect(rect, s * 0.2f, s * 0.2f, paint);
+                              break;
+                          case I_GUARD:
+                              path.reset();
+                              path.moveTo(cx, cy - s);
+                              path.lineTo(cx + s * 0.85f, cy - s * 0.6f);
+                              path.lineTo(cx + s * 0.85f, cy + s * 0.1f);
+                              path.quadTo(cx + s * 0.85f, cy + s * 0.75f, cx, cy + s);
+                              path.quadTo(cx - s * 0.85f, cy + s * 0.75f, cx - s * 0.85f, cy + s * 0.1f);
+                              path.lineTo(cx - s * 0.85f, cy - s * 0.6f);
+                              path.close();
+                              c.drawPath(path, paint);
+                              break;
+                          case I_CANCEL:
+                              c.drawLine(cx - s * 0.8f, cy - s * 0.8f, cx + s * 0.8f, cy + s * 0.8f, paint);
+                              c.drawLine(cx + s * 0.8f, cy - s * 0.8f, cx - s * 0.8f, cy + s * 0.8f, paint);
+                              break;
+                          default:
+                              break;
+                      }
+                  }
+
+                  private void triangle(Canvas c, float x1, float y1, float x2, float y2, float x3, float y3) {
+                      paint.setStyle(Paint.Style.FILL);
+                      path.reset();
+                      path.moveTo(x1, y1);
+                      path.lineTo(x2, y2);
+                      path.lineTo(x3, y3);
+                      path.close();
+                      c.drawPath(path, paint);
+                  }
+              }
+
+              // ------------------------------------------------------------- about dialog
+
+              private void showAbout() {
+                  try {
+                      final Dialog dialog = new Dialog(activity, android.R.style.Theme_Translucent_NoTitleBar_Fullscreen);
+                      dialog.setCancelable(false);
+                      Window window = dialog.getWindow();
+                      if (window != null) {
+                          window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                          window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                          if (Build.VERSION.SDK_INT >= 28) {
+                              WindowManager.LayoutParams attributes = window.getAttributes();
+                              attributes.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30
+                                  ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                                  : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                              window.setAttributes(attributes);
+                          }
+                      }
+
+                      FrameLayout wrap = new FrameLayout(activity);
+                      wrap.setBackgroundColor(0xC8000000);
+
+                      LinearLayout card = new LinearLayout(activity);
+                      card.setOrientation(LinearLayout.VERTICAL);
+                      card.setGravity(Gravity.CENTER_HORIZONTAL);
+                      GradientDrawable cardBg = new GradientDrawable();
+                      cardBg.setColor(0xFF13171B);
+                      cardBg.setCornerRadius(dp(16));
+                      cardBg.setStroke(dp(2), 0xFF8E1B14);
+                      card.setBackground(cardBg);
+                      card.setPadding(dp(24), dp(16), dp(24), dp(12));
+
+                      int logoId = activity.getResources().getIdentifier("berlions_logo", "drawable", activity.getPackageName());
+                      if (logoId != 0) {
+                          Bitmap src = BitmapFactory.decodeResource(activity.getResources(), logoId);
+                          if (src != null) {
+                              ImageView logo = new ImageView(activity);
+                              int size = dp(84);
+                              logo.setImageBitmap(rounded(src, size, dp(18)));
+                              card.addView(logo, new LinearLayout.LayoutParams(size, size));
+                          }
+                      }
+
+                      TextView kicker = new TextView(activity);
+                      kicker.setText("\u041e \u041f\u041e\u0420\u0422\u0415");
+                      kicker.setTextColor(0xFFE0574B);
+                      kicker.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                      kicker.setLetterSpacing(0.14f);
+                      kicker.setGravity(Gravity.CENTER);
+                      LinearLayout.LayoutParams kickerLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      kickerLp.topMargin = dp(10);
+                      card.addView(kicker, kickerLp);
+
+                      TextView title = new TextView(activity);
+                      title.setText("\u041f\u043e\u0440\u0442 \u0441\u043e\u0437\u0434\u0430\u043d \u0441\u043f\u0435\u0446\u0438\u0430\u043b\u044c\u043d\u043e \u0434\u043b\u044f Berlions");
+                      title.setTextColor(0xFFFFFFFF);
+                      title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                      title.setTypeface(null, android.graphics.Typeface.BOLD);
+                      title.setGravity(Gravity.CENTER);
+                      LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      titleLp.topMargin = dp(4);
+                      card.addView(title, titleLp);
+
+                      LinearLayout buttons = new LinearLayout(activity);
+                      buttons.setOrientation(LinearLayout.HORIZONTAL);
+                      buttons.setGravity(Gravity.CENTER);
+                      TextView telegram = dialogButton("Telegram", false);
+                      telegram.setOnClickListener(new View.OnClickListener() {
+                          @Override
+                          public void onClick(View v) {
+                              openLink(CHANNEL_URL);
+                          }
+                      });
+                      TextView play = dialogButton("\u0418\u0433\u0440\u0430\u0442\u044c", true);
+                      play.setOnClickListener(new View.OnClickListener() {
+                          @Override
+                          public void onClick(View v) {
+                              dialog.dismiss();
+                          }
+                      });
+                      LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(dp(120), dp(38));
+                      bl.setMargins(dp(5), 0, dp(5), 0);
+                      buttons.addView(telegram, bl);
+                      buttons.addView(play, bl);
+                      LinearLayout.LayoutParams buttonsLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      buttonsLp.topMargin = dp(14);
+                      card.addView(buttons, buttonsLp);
+
+                      TextView foot = new TextView(activity);
+                      foot.setText("by base64E \u00b7 @android_port");
+                      foot.setTextColor(0xFF8B96A0);
+                      foot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                      foot.setGravity(Gravity.CENTER);
+                      foot.setOnClickListener(new View.OnClickListener() {
+                          @Override
+                          public void onClick(View v) {
+                              openLink(CHANNEL_URL);
+                          }
+                      });
+                      LinearLayout.LayoutParams footLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      footLp.topMargin = dp(10);
+                      card.addView(foot, footLp);
+
+                      int screenW = activity.getResources().getDisplayMetrics().widthPixels;
+                      int cardW = Math.min(dp(400), screenW - dp(32));
+                      wrap.addView(card, new FrameLayout.LayoutParams(cardW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+                      dialog.setContentView(wrap);
+                      dialog.show();
+
+                      Window shown = dialog.getWindow();
+                      if (shown != null) {
+                          shown.getDecorView().setSystemUiVisibility(
+                              View.SYSTEM_UI_FLAG_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+                      }
+                  } catch (Throwable t) {
+                      Log.e(TAG, "About dialog failed", t);
+                  }
+              }
+
+              private TextView dialogButton(String text, boolean filled) {
+                  TextView b = new TextView(activity);
+                  b.setText(text);
+                  b.setTextColor(0xFFFFFFFF);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  b.setTypeface(null, android.graphics.Typeface.BOLD);
+                  b.setGravity(Gravity.CENTER);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setCornerRadius(dp(10));
+                  if (filled) {
+                      bg.setColor(0xFFB3261E);
+                  } else {
+                      bg.setColor(0x00000000);
+                      bg.setStroke(dp(2), 0xFFE0574B);
+                  }
+                  b.setBackground(bg);
+                  return b;
+              }
+
+              private static Bitmap rounded(Bitmap src, int sizePx, float radius) {
+                  Bitmap out = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
+                  Canvas canvas = new Canvas(out);
+                  Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  Bitmap scaled = Bitmap.createScaledBitmap(src, sizePx, sizePx, true);
+                  p.setShader(new BitmapShader(scaled, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+                  canvas.drawRoundRect(new RectF(0, 0, sizePx, sizePx), radius, radius, p);
+                  return out;
+              }
+
+              private void openLink(String url) {
+                  try {
+                      Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      activity.startActivity(intent);
+                  } catch (Throwable t) {
+                      Log.e(TAG, "Cannot open link", t);
+                  }
+              }
+
+              // ------------------------------------------------------------------ input
+
+              private void sendKey(int keyCode, boolean down) {
+                  long t = SystemClock.uptimeMillis();
+                  KeyEvent event = new KeyEvent(t, t,
+                      down ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, 0, 0,
+                      KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
+                  activity.dispatchKeyEvent(event);
+              }
+
+              /** Right mouse click (deselect / cancel) in the middle of the map area. */
+              private void rightClick() {
+                  DisplayMetrics dm = activity.getResources().getDisplayMetrics();
+                  float x = dm.widthPixels * 0.4f;
+                  float y = dm.heightPixels * 0.5f;
+                  SDLActivity.onNativeMouse(2, MotionEvent.ACTION_DOWN, x, y, false);
+                  SDLActivity.onNativeMouse(0, MotionEvent.ACTION_UP, x, y, false);
+              }
+
+              private int dp(int value) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
+                      activity.getResources().getDisplayMetrics());
+              }
+
+              private static FrameLayout.LayoutParams params(int w, int h, int gravity,
+                                                             int l, int t, int r, int b) {
+                  FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, gravity);
+                  p.setMargins(l, t, r, b);
+                  return p;
+              }
+
+              private static LinearLayout.LayoutParams rowParams(int w, int h, int gap) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+                  p.setMargins(gap, 0, gap, 0);
+                  return p;
+              }
+          }
+          JAVAEOF
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          base64 -d > android/app/src/main/res/drawable-nodpi/berlions_logo.jpg <<'LOGOEOF'
+          /9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcU
+          FhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgo
+          KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAEAAQADASIA
+          AhEBAxEB/8QAHAAAAQQDAQAAAAAAAAAAAAAAAgABAwQFBgcI/8QASBAAAQMDAgMEBgYGCAQHAAAA
+          AQACAwQFEQYhEjFBB1FhcRMigZGhsRQjMkLB0QgVUmJykhYkM0OCk7LwFzVTojREZHODlPH/xAAX
+          AQEBAQEAAAAAAAAAAAAAAAAAAQID/8QAGREBAQEBAQEAAAAAAAAAAAAAAAERMSFR/9oADAMBAAIR
+          AxEAPwDz7kYQOTg/7CEldGDHqo3dURKBxVAPUTuSNxUZKKA96AonFBlEMeaBEUOUCCXMpBIIF1RB
+          CAjCAmqVqBgUrVFSMU0ajY1WIxugsQNy4Iqpw5dyOEcLS5VJ3ZJQQPKjKd5QjdA2MogMp2hGAgZr
+          UQHcnwkiaY8kDiiPJROKAHpgE+MqVjEULGbqdkeVLFDnGyshrYx6yCnnxQk//iAu/wB5TFyqHcUD
+          imcUBKgZxQEpOKjKqkShKRKElAxKWBhMe9LJRBJuqYHvSJ3UBBGEDUYVEjMKVoUTFM1RU7FYjVZi
+          sxnCC0dodlQl6q+PWiI6qlI3coKz04HRJ4SadkBAIwmCfCIdCU/RC47IBco8ZROOyQG6KdoVmCPJ
+          UcYV2MBjOIoHc4RNwOaqveXJSvLiVEXIIS7xQkoMpiVQRKBzkxchyoESgcccki5AqHKYpdUJOfJE
+          JLySCSYHG4T42TNClYwkoGaMqRjMqxDTF2NlkYLe533UNY1kZ7lMyI9yzcFqe8gBuSegGSsxTaUu
+          MwzFb6x472wPP4KDUmRHuUzIz3LcP6IXVgy+2VzR3mnf+SrS2KeDaWF8Z7ntLfmgwULN8HqoKiIt
+          cVsAtr2n7KgraFwGS1MGtvZjOVC4YPgslPAWk7KnIxURtKMHCi3ad0QKA8oHJ+LwQFRQnchEwIR1
+          KkYNkE8IU87sNDUEA9YIah3rFBA481AXZyikduoSUEWU3EgJ8UvaqCLkOUJPckiFlLzTck2d0CJy
+          kEycIEia3Kdjcq7S0xceSCKGAuPJZm1WiesqI4KaGSaZ5w2ONpc5x8AFvvZ52Y3DUQZWVRNDac5N
+          Q8etIP3AefmdvNdxs9LY9JUxp7BRsbLjD6h2HSP83c/YNlDHMtL9id1qWMnvU8NsgIzwO9eX+UbD
+          2n2LpVm7P9GWdgEtK+4zDm6pfxD+UYCsG5VFW713u3OwCyFDbKuq9aKM8I3c52wHtUqr9LPbaFob
+          brbR07Ry9HC1vyCttvUp5ADyWDqa3T9rcW3TUNtikHONkwkcPY3Koya80NASDcayc98VK7Hxwg29
+          l4mHcVKblFO3hqqeKVvc9gcPitMi7Q9DPIaam4x+LqX8iVlKPUmkK4gUuoaeNx5NqGui/wBQwmi9
+          W6a0rdQTU2qCKQ/3kDfRu+C1DUPY7S1kTpLDcAHY2hquvk4D5hb9Fbnyw+mpJYaqH9uCQPHvCrvk
+          lp3feBQeYtW6JulhmLLlRSwgn1X4yx3k4bFaTV0ZYTkL2u64Q1NM6muMMdRTvGHMkaHAjxBXMNc9
+          lFLcIpK3Sjg1+5dRPdsf4CeXkferpjzLNEQeSrnIK2e8WmajqJYaiJ8U0bi17HtwWnuIWBnhLTyR
+          FbPiUJO2yJzUPVUOFLGowpWBFWYAoJjuVZh6+SrT9UFWTqoCcKaXqq70ECWUuiWfBEJMmykgRykE
+          jhIboEpGNymaN1dpIS4jZAdJT8bgu7dmvZlDBSxXzVceIMB8FE8YL+oc8d3c339yg7G9BwOhj1Lf
+          ommiiPFSwPG0rh98jqAeXed+i3+8XWW4zHpGDhrVKsTXK9Pqj6KD6uBuzWt2GE1BROfFJUVUjKak
+          jHFJPK7haweJKqVT6DTttF0vji2MkiKnb/aTO/ZaPmeQXHdba4r9RTcE7xDRRn6mkiOI2eJ/ad+8
+          fgoOl37tOtNm44dO0ra6oGxq6oERA/us5u8zjyXMtR6+vd7JFxuVRJF0ha7giHkxuAtKqKsuJ3Kp
+          ulLjzKuIzElzeTsceSj+nv8A2isawOcdsqxHA93QoLsde8H7RV+muT2/eKxLaZ46KRkbmoN0sepK
+          23ztloaqemkB+1FIWH4LqVg7XKhobDqGCO4RcjK0Bkw9vJ3tHtXBadxYcnojNa4OzlMHrKhr7dqC
+          kNTYqts7WjL4j6skf8TeY89x4pQ1MtHN1GDyXmKyX+rtlbFU0VRJBURnLXsdgj8x4Lu2h9bUerGM
+          oq8R015xhhGzKj+Hud+716dyiys1q/Sds1vQucQymuzG4jnA+1jk1/ePiOncvNGqdPVlluM9HXwO
+          iniOC0/Ag9QehXp8malqBzBHIqHWemqTXFhLQ2OO707SYJjtn9xx7j8OaaWPHs8RaTsqzmrZ77a5
+          qGrmp6iJ0c0Tyx7HDBaRzC1+aMtJWkQhSxqIDdSxoLcI+SrTDcq1B18lBKNyiqEigcrMgVdwQVCk
+          m5pYyiESkSmISQLmUYCFo3UrBkoJYWcTgujdlOj3ao1FHTyhzaCACaqeOjB93Pe47e8rR6CHLgSv
+          VOjbI3R+gIInMDLlXATznqMjZvsGB55UtIn1DXte5lFRtbHSQARsYwYAA2AA7lV9JR2S1TXq6/8A
+          hoto4xs6Z5+y0eJ7+gyUdooXXCubE7qcucdgAuUdq2qxebsaeifi1UWYqdo2D/2pPN3yAUite1jq
+          esv1zlrK144j6rI2/ZiYOTWju+fNajPMXOKKokL3FQcJJyqgNyVPTwl5TxREkLZdM2We63GmoqRn
+          HPPI2Ng8Seqon0npK5ahrBTWuldM8budyYwd7ncgF160djdvgiab7e8TY9aOjYCB/idz9y3egoaf
+          S9kis9qaAW7zzAetK/q4n5dwVcMe5/E5xye9Z1rGu1fZDZJ4+G13idkvT6Sxrmn+XBC53q3QVz02
+          4GugBhccMniPFG/29D4Fd1gHAAc/FZMOp6+jlt9wjbNSzDge13zHiO9NTHkKrjMQLepWLleQSt+7
+          SNOS6dvtTRSZcxvrxSftxndp/wB9QVz6pGHFVDsnIPNZe217opGua9zXAggg4IPeteypYZS12xVH
+          qfs71czVlv8AoNe9v64gZxB5/wDMMH3v4h17+fetlo5JKSqDm5GDuF5a01eKi3V9PVUkroqiF4fG
+          8dCF6ks9fT6isFJeaRrWiUcM0YP9lKPtN/EeBCzWpWpdtmkY7laxqO3xj0rAG1bWjm3kH+Y5Hwx3
+          LzjcKYse4YXtaz8EzZKOqaH08zSxzHciDsQvMXaXpl2ntR1tAQeCN+YnftRndp93ySJXNHNw5OwK
+          xUREOOyja3C0ixByPkoJeZVmEYYT4KCXmUVRlHNV3BW5RuVWd4oigAm6p8pigRPNMnSA3QEArEDc
+          uChYFkKKPieEHQ+xrTgv+tLdTSM4qeJ30iYH9hm+PacD2r0HqWU1Nxe07sZsFpn6NlrEFuvl5e0Z
+          w2ljJ/md82reDTmoqeXrPfus1Y13Xdf/AEa0FNJEeCuurjTRkbFseMvd7sD/ABLzbXyF7yuwdvly
+          9PqdltjcfQ22nZBw9PSO9Z/zA9i5BIzidk7BWJVHg3RtizyCsYY3pkpvSezyVB08ByMrsvYBRRv1
+          ZJNI0E01JJKzwds0H/uK45DL6w3XW+wm4Mp9XxwPdgVkL6YH944Lfi3HtUpHXqxnFK5xGTnJUGzQ
+          r9bEWucMb5WMlaQThZaqQyAI6eT1wVTAPFg5VyjidxjHf3IRo/6QVOyS32KtwPSOZJA494bhw+ZX
+          nmt2cV379IO4RtdaLYwjjp4HTSDPIvOw9zc+1ef6x2XFajN6puKTXboTuUjthUZCjl4XDdd2/R/v
+          3DeZrJUOzT3Fn1YP3ZmjLceYyPcvP8DsOW4aRuEtBcaargcWzQSNlYc9WkEfJSket42mGbHJzStL
+          7f7I2ssVvvUTR6SI/RpSOrTkt+OR7V0Cd8dU2nrqcD0NXEyoZ5OAd+KDUVv/AFxoe70OMuMDpGZ6
+          Ob6w+Sy08VXCHgedlQDfWwtivUHDK7ZYUR+stsm+zF5qrIeatTO6Ko/r7kFeXqqz1ZkO6rv3QY3K
+          bonTdEC80bRsmARDmgkjG6zFtjy4eaxUI39qz1pZmRqD1f2RUYoeyilcBh1VLJMffgfBoWw2CmE1
+          4gaccPFkhVtDw8HZfp5mNnU4d7ySs1YY/R1E8oGHMgkd7QCsNPKWvq412pLrVvPEZqqV4PgXHHww
+          tLnl9Y7rM36XMjiTud1rMz/WK2ykMvih9Iq5cluSgsxSetzWyafrpKapilie5kjHBzXNOC0g5BC1
+          qBhcdlsFpo5HvaGgkk4AAUHqTSmoqbVltje0sjurG/Xw8uMj77O8Hu6K7LROBw5q5lo7RV/fHFUt
+          p3UkfNslQ/0J8wPtfBdUt9Ne44wKu6W2fG2ZWOe7+YAKVqVVjoySMAkp7vcaLStudXXItdJgmClB
+          9eV34DvKyNRT3h8RbS3C1Qu6ObE4O95yua6x0VqGqMlSR+sXu3LoZfSP9xwfcoWuNayvNTeLrVVt
+          W/inneXuI5DuA8ANvYtMnJLitxvtqmp5pGTRvZI04c1zSCPMFarUwFpOy0yo80kZZgpBqoKLYrPW
+          Z2JGrBsbus1aR9Y1B7A7PKj6d2bWKU7uga+mP+Fxx8CFt9kwZHMdgtcMELn/AGLuL+zV4P8Ad17w
+          Pa1hW9Wd/DVtAWGnkbWdF9Eu9dBjAinfH7nELT58Nyuk9rbWw6yvjWgACrk+JyuX1TvWK0yge/JK
+          gkdjKJzsKB7u5URyFQuKN5yVE4+9FUOqcN706dENj3I2hMApY25QSwN3C2GzNzI3zWDgb6y2G0DD
+          2oPYWgsS9mWn3dGwcPuJCzdlAfUzRdZIXsHmRhax2QVIq+zSGMbupZpIz5Z4h/qWftc3oLpA88g4
+          ZWK1HjLUDSyd7TzBwVrMp3K6H2pWx1s1feaMjAiq5A3+EuJHwIXPJhhxWmUeMqaFnEVEwbrK2ynM
+          jwACSTyAVGwaM0xW6hukNDb4uOZ+5J2axo5ucegC9HaW0vadIws+ixsqrkB69ZI3cHuYPujx5+KD
+          QunY9IaZihcxoulW0SVT+rc7iMeA+eVkHvLnnKysi1NVySuLnvc4nvKZspHM7KpnCCWXhBCKuS1Z
+          a3YlRtrzGQWuOfArEz1BzzVYyuJycoMteKK16lpvo97hBkxhlTHgSx+3qPA7LgnaDouq05X8EoEt
+          LLl0FQwerIPwI6hdqhkJfuThZSqtlNqGzzWivwI5d4pMbxSfdcPx8MpuGa8hVEBYTsoOE8ltuprN
+          NbLjU0lVHwTwSOje3uIK118OHLTKCNm4WbtTPXCxsUe6zloZ9Y3vyg9P9j7TB2aEkf2tdIRnwa0f
+          gtxs7+Ksbha5pSE2/s8sNOQWvkiNQ4fxkuHwIWb088CeSRxAYwZJKw08zdrdQJdZ3xzTkGskHuOP
+          wXM6l/rFbXrOt+l3auqM59LPJJ73ErS6h+XFaZA9yheUnHfKBxVAuO6jduncUJ5eKKr8+icN3RY9
+          qIDwRDNap2M7kLRlWIm9UEkLcELOW4hhBWKhbuFeik4XADog9Jfo63MTR3a1Odu5jalg8R6rvm1b
+          9Vu9DNnq12V5y7J9RfqDVtvrHuIg4/RTfwO2Pu2PsXpDUcXo5fSt3Y/cEcis1qOL/pE2fF3orzE3
+          6m4U4DyP+qwYPvbwlcDq2YefNevtVWr+lOjq20tHFWQf1mk8XtH2f8QJHuXlK60zo5XAggg4wQrG
+          axMLcuXVew6yR3bWtGJ2B0FIDVyAjYhm4H8xauY07MPC79+jjTAPv9WQOJlNHED3cTiT/pCUjp1w
+          lMtQ9xOSXc1TzgqSY8TjzULzt4LLRnvxv0VKofud91NMdu9UpAXHGM5VETjk/JJjCSFK2E7K1DT7
+          ohU0XIkfFZiiZwvae5VoowweKnjlDD3YUWOddvFnYyuoroxoH0uHhkI6vZtn3Ee5cRqmhrivR/bU
+          0S6BoZ8DMVYGg+DmO/ILzfWn1ytTjNQxn1lt2irTLeLzRUEAPpKmVsQPdk7n2DJ9i1SljLnhd37E
+          LP8AQYarUVU3DImup6XP3pCPWcPIHHm5COp3eojFQ2ng2hgYImD91owPgAq18rxZdBXivJ4XmBzI
+          z+84cI+JVCFzqyrDWkFz3ZK1Pt/vbaO0W6xQuAc7+szAdwyGj35PsWWq8/3ibMjt1gJX5J3Vy4Tc
+          TzusY52Stsnc5ASmLkx5IEdihPil5lIoGRNbhMNuXNSNHggKNu6tRtUUbVaiagmjHC0lD6TBRSHh
+          aAqzjuUGZt1RwuGSvUvZrqBuqdEMppX8VxtzRE/J3cwD1He7bzC8jQTcJW/9murZdMagp65mXwn6
+          ueIffjPMeY5jxClI762ofR1TZG5D2u9q5b20aSY2b+kVsjH0Ktd9exo2imO58g7mPHI7l2C700Nf
+          SQ3S2SNlo6hoka5vIg7rE074zFNSV8TZqGpaWSxP5EH/AHz6FRXlJ0Rjk5bBdq/R0u8EV4uFoqHt
+          jfXwt9CXHHE9hPq+ZBPuWtdouhZ7BV+npw6e1Tu+oqOfjwO7nD48wtIhkkpJmuYXMe05DgcEHvBV
+          R68ntc7ZHD0ZyDzwo/1ZOBn0TvcuBW/ta1XSQti/W0sjWjAMzGyH3kZV3/jJqo87iz/68f5KYuu1
+          OtVR0idjyQi0TH+5d7lxpnbBqcn/AJg0/wDwR/kpmdrupif+YN/yI/yTDXYm2mbGPROz5KyLbKxo
+          JjdnyXHmdrWogMurm/5DPyUUva/qM5Ar24/9ln5Jhrr8lJOP7t3uVb6HUOO0bvcuPydrmpCNq9v+
+          TH+Spz9rGp3NLRcuH+GJgPyTDW/dutxgo9K26zmQGskmFQ5oO7WNaRk+ZPwK89yZkkOFfu10q7rW
+          SVNbPJUTyHLpJHFxKsWCzVV2r4aSihdNUSuw1rfmT0HeVZ4nWR0Ppyov94goqUYLzl8hHqxsH2nn
+          wA/AL0BWvpaSjprTbRwUdI0Rs7zjm4+JOSfErCWagpdIWp1vontlr58GqqGjmejW/uj4nfuV+y0M
+          lwq2hueHI4iis/YGRUVLPc654jpadjnuc7kABkleZe0PUkmoNQV1wkyBM/1Gn7jBs1vuXUe3PWcV
+          PSN0va5BwR4NY9p5uHKP8T7B3rzxX1Re47pIlQVEnE47quT3oHP3S4iqCzhMSg4imJ8UBkgIcoc5
+          TEoJ+uFLGMlRAbnvViIIJowrcTVBEFbiCCKc7lVXlWZRnKrPCAA7BV+jqC0jdYw81JE/Byg7v2Pd
+          oEdmf+qby8utE52ed/o7j1/hPXu5967BebSGhs1MQ+CTDmubuCCvHlFVFpG67R2VdpjrPEy2Xriq
+          bQdmnHE+Dy72+HTp3KWfDXT4BG6lmoq6BlVQzDhkhkHECPz+IXMNc9lk9OyW4adD663buMQ9aaEe
+          I+8B3jfvC7Z9Bp66ljrrXNHUUso4mPjdkEIKZstLJxRFzHArLWPH1TQSRk7FUnwyNPVeu9QaR09q
+          XjfcaQ0dc7nV0oDS497m8ne3fxXNr92L3aEvktElNc4Pu+jcGSe1jvwJWtZscNaHA9cKxGXAZPJb
+          ZddH3K1vcLhb6ulx/wBWFzR78YWCnojkgYwO4qjHvnceuygdM5Xn0Tu5FS2qaplDKeJ8rzybG0uP
+          uCDG8byeqljie/GASt9s3ZjqCuDXvojRwnf0lYfRDHkfWPuW42vRNhsRD7nMbrVN39DGOGEHx6u+
+          Hkpo57pDRtw1BP8A1aMR0zD9bUy5EbPb1PgN11y30tt0tQvpLK30tVI3hnrHgcb/AAHc3wHtynq7
+          hLVRMgia2npWDhZDEOFrR5BWrNZJ6+XdhbGDu8jGyCtbKSa41QawOe4nc9yn1/rCm0JZ/wBX297J
+          L3Mznz9A0/ePj3D28udTXOvbdoykktthMdRdiOF8mzmwHx73eHv7l5xvd3nrqqaoqpnyzyuLnvec
+          lxPUlM04ju1wfPNI+R7nve4uc5xySTzJWEkkySmmlLnHJUJdvuqD4k2UGU2d0EhPimJQ58EsoHyl
+          lDlJBdaPWKsxjACgjG6ssCCeMbq3GNj5KtGFaiQV5OZVeQc1ckG6rSBBWcN1Hy3CncEBagON+MHK
+          ydHVFhG5WJbtt0UsbiCg6roTX1z0zUB1FNxQOOZKeXeN/s6HxC7/AKV15p7VLI45JG264O2MUzgG
+          uP7ruR+BXjqnnLSN1mqKvczG+3cpYbj2jVWyRgy0BzfBUiJIDkcTT4Lz5pXtIvljYxtPXPfTt5Qz
+          /WM9gO49hXR7V212+oAZerS5pxvJTODh/K7B+Kzla1u0l4qmNLOMuZy4Xbg+xYqpqqOTJqbRbJj1
+          L6Vh/BDT620TcWgi5ilcfu1DCzHwx8VPnTlYM09+t5B/9Sz80NYeaptsZzFYbS13eKVn5KCS/wBV
+          EwspY4KZvdDGGfJZmS32Ju8l7t4A6mpZ+axlZX6Lojmpv1C4jm1koef+3KqMHVVFZWEiSSSQnplT
+          W2x1dW/+ydg9SFDXdqGjrUHfQKWprpByIYGNJ83b/BaHqbtpvFY10VqZBbIDsPQjikx/EfwCDqtd
+          T2TStO2r1BWxRnGWxE5c89zW8yuVa97Xam4QvobAx1uoMFpeNppB5j7I8Bv4rlV2vlTXVD56uoln
+          mf8AakkeXOPtKwU9U5xO6uJq7XV5e4+sTlYqWUuJQPeSdygyqEShSS4t+SgWUkilhVT7J8Id0gSi
+          HSTFJBlIwp2qNoUjeiCdisxnGFWYVMwoJJm9VXe1W2kEYKjezBQUnNQ8KtOah4EFbhRtaphGjbH4
+          IAjaQrcR4Rk7BAGhoy5RyPQWzVkddk305w6lY58ncoHyFBmRc3j7x96Ruru9YB0h70BkPeURnn3Q
+          kcwq0tzcRgOKwzpCeqic896KyUte4/eKqSVLndVVJPehJQG+Qu6qMlNn3JicJoclC45SSARSCdMn
+          CBk6SSiHwmPJLKSKQCSWU6DMBGAmwiAVQTSpmnCgHJSNPRBYa73qRr8jBVYFSByCUsB7kxj/AN5Q
+          h3cUuLxQEGAcyPYkXBvIIHOUbnIHe7dQPf4pPeoXOQM9yhe5O8qJxQM4qNxRHko3FAJO6ElOQhzk
+          lAxO2ExS6JIESg8055pwMnwRTJIiNkKBJc0kkDpiT0SOyWEDpJA7pkD9E4CZP0UGcwn6ckWPBNgq
+          oZqIHomSUBgog7fZRZxyT5VEvElxKLPmnygIu3QuchJUZKBPKiceiJ3JRO6oBcd0BROQFADkBRuQ
+          IBcUJ5J3fZTHogEp8JiElAPVOzkknb1VU5CAo0JG6gZOlhIhA3PdOljCZAk43KScJoQCdOMJkH//
+          2Q==
+          LOGOEOF
+          ls -la android/app/src/main/res/drawable-nodpi
+          python3 - <<'PYEOF'
+          p = "android/app/src/main/java/com/raport/redalert/RedAlertActivity.java"
+          s = open(p, encoding="utf-8").read()
+          needle = "super.onCreate(savedInstanceState);"
+          assert needle in s, "onCreate not found"
+          s = s.replace(needle, needle + "\n        TouchControls.attach(this);", 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PYEOF
+          grep -n "TouchControls" "$D/RedAlertActivity.java"
+
+      - name: App icon and package name
+        run: |
+          set -e
+          R=android/app/src/main/res
+          mkdir -p "$R/mipmap-nodpi" "$R/mipmap-anydpi-v26" "$R/values"
+          base64 -d > "$R/mipmap-nodpi/ic_launcher_foreground.webp" <<'FGEOF'
+          UklGRoYiAABXRUJQVlA4WAoAAAAQAAAArwEArwEAQUxQSCkHAAARsMZq2zLHzfvK+mzZmpWtWbkT
+          mHh5w0yOyxBmZk4cZkZvmcIphzkpU5iZvQonDicL49KErEePHj26f3jL7XN//vVFxASkyv+V/yv/
+          V/6v/F/5v/J/5f/K/1PEuaO73lx1o013GT7jgit+fusDo2+02hOO/6E+0W6NjT5w68+vOO/04V02
+          3WjlFerdHbmMyUXf7M/t962fP75E8H93YtGjN39976GZvUVZ0tkcOuLqhYZ/0ExV1czM3f1/kbu7
+          melkM/yD8tRlw4PLF6VGnj50xgOGZZqIqLk7/u+6m6mIOJY5cecJG/blMiLXt7liESariJojgG4q
+          opj8xg++1Fsu5DnHPwMAJmqOYLqpGAA8PNzMJUFunvIWABN1hNVVHMBLR/SXAJ2bPgxA1RFeEwVw
+          +1DBXf2kDwFVR5BdDVh0SI23vq8DEEOoTQCcVOOsdjpg6gi3q8MO7+Qr765wRdAVGN8skzV3FFAE
+          XoE7V2CqcwQQxN4FOCLTNPstqCP8pni8n6S9AQWFAnyZoeJqqINEM3wt09M7CgGRgt93kjPQhoJK
+          wWt1atYCDGQqPmwSMwh10GmOlWkZhDgINcM6pKwHdVDqitUpWRXqINUVcwhpQh20unqDjlrbDMSa
+          j/eQ0fEcDNQaHs9cXA0FuYofULEvBPQKdiJiJgQEC1agoXjHjCGzsQ4WvgkFxYqzSVgZApIFMynI
+          Y+Ysmb2QGTgQCpoFexPQo+o8uUp3/L4LBdGKc8M3HQqqDb3R+wFbim8Grw8Gsg212I1A2RKcErou
+          cbDt/nERuR0gdEGwaeDyQhhfhscDNwAF4YpG3Ba4MCZ+Utg6xuGMOd7JUVsZCsoVA1E7y4Uz8aOD
+          lt+Bc+ZYmGPWgIF0Q1/MdnFhTbBpzH4OY03xg5AVH8JZcyzJERuAgnZDf8S2h/Am+FzEfgDlTTES
+          sPwanDfDwwGrwcG7Y6IzXnMhxEHRiNe23AmG4vU1KHdHx+t2GHOKq8OVW3DmDM/laPXAwb0W0Voe
+          yp2hL1rrQbgTzI7WTvx9JlonQdnbO1o/YU9xbrRuh3FnuDpY+SU4e/cEq/gre46xHKuag3xHuzNW
+          /XDyAKvFag6MPUd/rDaEsmeYGatNy4C1YrU7f4rPxuqoMmDbWJ0N42+fWF1cBhwdqxv4M5wbq1vL
+          gPNi9QCcv8tiNVoG/DxWY2XArbFaBPod98SqXQY8HistA0ZjhTLgpSmXsSmXd6ZYgCVTLn+dcvl4
+          ysWnXFD5r/Jf5b/Kf5X/Kv9V/vuXehngsbIywGKlZYDGaqIMmIhVuwz4a6zGy4BWrBbB2XO8E6s3
+          yoBXYvVcGTAaq8fLgIdjdV8ZcGesfgtjz/DzWF1XBlwRqx+UAefFagF/ijNidQyUv8NjtW8ZsFus
+          tikDNo3VJmXA+rFaHcaeYW6sVioDGrGqw9mD98aqR+HcOT7uilXR4u+tHKv8DHuGB1Kwfwtj77po
+          XQzlTjESraMg3An2jdY2/H0uWmvyNydaDSh3hr5odYN9LaKVF8GZMyxM4b4VxpziiniNQJkTHB6v
+          rSHcDcZrNpQ5xafi1eNOnOPjIl75JThvhntSwC+G8iY4JWLbQpgbjFgTypuhHrHiQzhrjjdyxNKv
+          YKwpLkgh392FNcFnY7Y8lDXDtJjlRXDODI+noI9AORM/MGorQzhTNKLW8Wc4Y4bnctTS11wZE+yb
+          wj4blBn64pbH4HwZbk2B3x3Cl2Awct3qdLm3OiKXvg5lS7BvCn0dxpZNdMUuXQblSnFCCn6DLdPu
+          6KWLoUwJDknhrzlTbuNF/NJRUJ4En0sEdrxnzpL5PYnCtSAsCfo5SBdDORLsl0gsWuYMGR7ILKSV
+          IQS5eG/i8QgIP4KhRGT+DZQdwemJyuINN24Uv8pcpLqaM2N4oUhszoU4L+Z/npb4XA/irJhN9CdG
+          N4E4J25YKXE6CHVGzDA/sboezPgwYE7idT5gbCjazcTsCn+FciEY60vc9j4HYUJwV1dit/gJ1Fkw
+          w0hOBO8CKAcCbJo4HngF4vEzxaONxHKxAJDguQDDORG9+mtwjZwCDzQT18UhgGnQXIH21jnR3fsd
+          wDRgroAd1ZUob5wHQCxWJoAcV0u0189wQNWj5GLAkn27E/U92z4KQNXjY6oA7vxMkejPzVPeAmBi
+          HhdXcQCj+0xPJWGec/woAKioh8NNxQDg0cObOZWJefq217UxWUXNQ+CmIorJL319sJbKyKK59YXP
+          YdkqImru/4fczVREHMucuPOkDftyKjFz18CmZ926CP+gm6mqmplP/l/k7mZmOtkM/6A8ddnw4PJF
+          Kkdzd2OtbQ7//s+fagn+7/75lXtu+NreQzN7i1TG5qK73lz9c7scfsqCC6+79amXxt5rtSf8f4Z8
+          ON5qtZaMjT5w682XnXf6IbtsuuHKy08rcqr8X/m/8n/l/8r/lf8r/1f+r/w/VQwAVlA4IDYbAABQ
+          hwCdASqwAbABPmEwlUgkIqSnojK40PAMCWdu4XZ30HAEdQb1uze8V3tmQTyd5onT/nJ9IH6d9gX9
+          f+oF+4HqU/bz1mPSx/e/UI/tH+U62P0G/2M9OD93/hp/tv/V9Kf//vR/1XfFX++8F+AW9X3r/UO9
+          0fv//K9FKcT9O44XGYepewL+mfRs0DfX3/w9xf9f9+pEBUvdKFxarhpg9S90oXFquGmD1L3ShcWq
+          4aYPUvdKFxarhpg9S90oXFquGmD1L3ShcWq4aYPUvdKFxarhpg9S90nYreBpkXy+idwMD+M8OeF6
+          olmxmKA98JrLrkIMTeqcoXFquGliIYSrVugD60VPeQef8/NTjxoDyBMw4/qfd2nRNJPbu8r/2n8S
+          Rk8oXFp+YW3aHY/0RbB+xy88wSIMKP9lnR9S7yt8ijZaHN+zEzL9lTtNgWCpza7E/wX8K6LNP4sA
+          zk5yGBMNBjOrQvQEPOI2+jNH5L+dM3SMuLVcKgdkNu7cvmA01QzdnIMrWmFvgv7X1HSKCsq6DGXG
+          GEOBDIX3tPTMoXFqtBX4itjtdh8vjoQ9BxS+WNzZYIUz8dCsIQ02p8p0z+AXPikYfsU2CL3MUtpQ
+          KMW3anclNMAXEDucXlwWA9S9zq12LLDCFyesAenTd0tjh5b9MVnxy5cp+nU3OGTLTYdV03Z87WtG
+          d68lc2UP5hqlvQsL+0zEP95Hk5LWqoONMekkeb91O+QTwgf+nCgU/vHYMiwZwLK4tWsUIdCYDqp/
+          PaZwQi9vB5Ef46ZBBFiH/+vyW/X///yInTtsS7Oaq7NxzP0/YApGlVRopGvjYVLLV43vL1ex+BZX
+          FqxY10iIvwZiRpJORA5VoAkyLtDdlKJztBpKFAW+Ceh5plpo/+20VgYp53/WlyhwmCqmfJnOGPKF
+          xV9OMkhe2RJrG2uv/QmsNEHkpbaba9eAHlGmgzWTYAEnpP/wqv/1/hEVsAzJbY30YNgpgjYelV1Q
+          VObyVzn0hwiM+aKaPrylStOJtoBv/9Kolahf5cxpT3ILjqauB1XxWW0Qx54/jCrqgqc3c+GnyeOk
+          7M20n1w84B5bPaZbYJjvrJyq8Rd6Ubjsnyiruhg5COhza7gGL+EUlZ3+/VXojkixieGwd6mMoC0Q
+          xHFcfngzfzl7wgXaicayY0EcQfn3+ZzP/ke/8P9tpv/9SeULi1W6GjFOvxGOLq6J2V///Kj2NSYM
+          TfIEsfURXHTNoD4DN8vkaEYgZeeXnLnYhQuLVcC2LwKgzhhJqcjU+lPf+Sf9f9k6GlTmggt7lB/C
+          ABElNjNhayJo5uGXum+9+vkOPq9UsZkmCBba9Y4tdwHqX+mR6JZC8KfdCfBOT6wXiesFy2EBfUvd
+          KFxar02YzZK154Ze6ULi1XDTB6l7pQuLVcNMHqXulC4tVw0wepe6ULi1XDTB6l7pQuLVcNMHqXul
+          C4tVw0wcwAD+/9SjAAAAAAAAAAABF+IKa1Q+B3v6lduS6E1i5xOpzdRx4alvNxur1UKpuWbbe0Bv
+          qYCTmBygqDK9n31ySrKgztN3P8gh5m4LU0u/Ku9pb/+v1diVTpFnuisfbn4eUc3YxQAZMaK/iRHh
+          NlhHe33cpF1Wp870rHi5eV8C9W2qArPwLirQHPoM796PPqVg7LC98kuX/z+IBA5uchMpcvkAJz6F
+          vt2EWHKOO9lcDsit6qH13o01V5TnEu6yoRG1f9+1GADOfK1Jt5trrrjIOmQRT/GAAcnh5Aa34x6T
+          dYwHrvdv1LbOjfiPrVpEXj2a6A10d2dPfkmJRo8d8FXnCkxlE5qfXIXFPZbz/G872aCsJWLYb+7m
+          4pMpNx6HaKw8rpUmFv8EMC2zWC7H4LReQMn1qzF66x7g/yklvM3yiJyfqpa1veSBLbd8anfssXed
+          oXgKAtPAta6isv+6bVXQ4sGIlBDyLy2sih4z52s4JEzTFhixUph78Q9QQQQiH2qEEd6buXPFOPLb
+          KF6iGoo1Ssby2g6hOjR+s4gTLFjTPtPI0PNzhn+DaQxWpayIst1TQvY1fXMdh0kRJ0PNM5vrrC7B
+          iid4xhFWlWfAxTvtyZSg4TtQMoO6dEUAdz6qpcw1ta3pOrDlMY8W2qn8EP26u6X3Aji9xqaVbrdo
+          v5V2GYN7o0FrIFcO9bfKi0Sk3DRcmEd5JTnrhCund3drnxf5WtfvlYk9Wbi3a49YTKmxKNVp7vF1
+          Il9cuiXwq168e6rk6BjBX8QqwdobgSxs/5mfxh28A+z4csXwWGeFxvjOhwWgscmeNuD39BaVs8VK
+          7FGdIoW2RaB/T39q9+HI5IlZrmRUFoBu6oIkeLVMKZyejj0M7KxI3oQavu+ekcJa3tjccIQxFIHp
+          HFRF4l6vmNx4G/n4GlE8UHxF0jXwFx5xHSBJO81ddN+ND302tASGmX66v3H8ZX9CBaNX96XGN91I
+          I111bnwnMaJzs5st+jiLbTjV8AQudLWXdlV8ss8iPOiRHuP2FIfDm5nPw4yuXlWEVUlP9A3ZYmbD
+          Kc43dFrDezNFrDa1Ajz3nFGm185zdZY2jv6YDtxxNVhEaNzZH/Cf+RTSFxtpX5RJGxvoj3PFRqk2
+          S2P37tWp8yHagIZHLikeW8b8jNqtMQN+Xy7r1hxH3htKYLEpJdJK/8tXS3KPt3sV++puRBLn5gAt
+          mX2MEh8bQt91gnuqAynGJW/4o32IlU9+VsXA2P4FM2OolrTTQLpYZXnSP3a+nYQ8Uk/MrV/zpSeF
+          /pvnyGbmMCjy0//lR8TURlYa33ohljk+9Gp90s7youAr/zO4UfEEZT24Snt+5jD2VkQT+o/F59cL
+          jIkTjRPn17XIBbezt4hsOxV2nCYgWqxUvHw/3eDD8n2XyPmSFjEgkOz+uSBO55Aev8SPSz7kDXjc
+          7gSAUyaDh1JgOR0eczTNre3NdHoJOxb+pkKbdifJu1D6QvomtZcRGx5fMNo+2XN/HnGVjk0Is71v
+          7IsZPgJuqLubour7KTewqOnbiyPBkpKrqlm+nG9fS95a/a6AYZ23Bffk4amIBFCuVkL3nDflqaYV
+          HrNYqLUoWR4fEWhxIPTZHsAIl6HDgl0d/SOZYkWCqYzWgsYgQgqzh952bt3Gvbfx8ScnYrDQftdn
+          RD/sx6xw3fxlA8+OGcAo91XCzlcP7iHa9l1Fr0g1Q90pc/N4i0t9vzqJPTCY9EVO8MVgeX40Mr6h
+          mPzVTFpnkIbP3+Vf05kiZ+vFYzzL4TEz92Q8HBKc9f5ft6e19r4rs3F/n8YIphyzzIxDQAnKgVZV
+          OkIPEUP9phEzH2vHjw32y4wVdbfupD70zYTr1Sle/xJKybtyn6GZgkkz5c4kauWKL0qEVBLEOdTn
+          lVTdsX75Odvnp83URtyFE/mVDlhUSYkiXQ5dKuANgA0J5MoqIADuNkgSP9oPXqVVljOuGV97B7PE
+          zpOgomD1q4w1NPuoVq3O6b2R5gXBQfasQaNwCBf9cOqRL8IrlePHTwS1f7+ZGQYtZMQh40TkqOoB
+          hEMk4k5ME7D2L7W+tNJAEK61nMmV6nuj8V08NyUqiaVNKqPCUItJls+rLOxv4/0obaK1qunbz54N
+          KehFChKUTfNOIvUHeZTUG2GXogsVVcTPI6VE+3oG5t+Ah7bN7xFuuLpeRUAapV0HAZdcMejzm79T
+          ZVG8EYHN4Ex661RXblwh4OWOyyvDl5pd9z3HqZZVsvfrEah3ecFKDE2sr2kpc3mW3fOVIfBBJKbG
+          2dmnCd/p3/II094RcP5qU3dOn45oo2rI3+X9SdIL5ZuaIT91rpvEaY9xGlzBd81k7Z6eJE8rBXuD
+          WKYW5AUttTrnuuKh3vClSAza2pan4jcinOX7YHXkYwq+bwATF1B09HH/bzvCnyVHk8f7L3eKhAxV
+          /Sk6cCIymN78ls/8DPFnv9Qji4wg9wlTHnpdQ3sy/cDoAOn4Lvqn5KmrKzq4dysdikAoPOOGpqN4
+          7psgkiAvlXrhYyWaNIXfL+wIGA8SS9opwUxd/r10079nIncd17xnPSsSIY+dnEUc7fnHpxPK+YAG
+          w2X+xxzhkOlWDM/elqxVmF6+Np5/b9Z7oyn7RN8FX6clG6nQauqHlYSVW9m/J5wN85O9JdIVqPi2
+          jpfviEip4vKnZqKUg1Ct1ufilnkOTwuTemHzMTknenxGrJNGndtS/2IFgZRmm4mQwZsTkc9+qV9x
+          X5YO/wcP+IrItEGqmkMNBs8M164AmjfNH4ki0ieeE11dJr5wwTJFvrnJ1YnVgtzNzgYlU+/iQFRu
+          KGBlxuGwEiRukrZvw7p2AsYFtzbb11+eXBFt3EDzwzfIoSvdS/ko+JPHq0E5V9dXVUCaNX1E8j0M
+          HQOhVqC0/JeLVSwTB3qf/1Z3vns1M18adbbZW8BN08tQlrOS48Mmx79i5fFDmXq4LCglPwVhfVFg
+          5p64BkNwBp93R23GNHFsIEfn/eC/D9aQ/mtgd6Epv3rFl2wk41jmeWPX7g10tadaI4/ftr3xTz2k
+          QPpLfT3yAqUzzBVvDt7wWeswxtiigO+pM5EWO3gLLyeZ3+fxQ/DHo5k2HjWjelO+voLudGIdLc/C
+          iVTGeqI7xmGlunxTH5ct95DAUbPX7zH6rjTp6ic5vgU2gFxweEPcNeGQo5u/JvNNRGEZl7tsHUvV
+          oXfngBCVN2CrVb8NRCRCLb3G8kiYz+0V26/yharsdLudynTojk8YMYuB63z8nMpUxEL9IjVk3mcr
+          Kegovb1tTvbehfTvXL7d3E/PON3fg9Z5Llv8efTDiNji+9GbVQ4q+HlhhFsHDZ4Se5Nd3v3BpdMC
+          +zASDc3s4w/hOGxRe8ITB6beB1/8cTEkFxSoJKp85Qyifb5rJi88lbKAZqMkafJnq2sqaJdwLB3K
+          B29H+ljqTA8vN89L1BvG1QxGAoVZN14SOG+RbDQp57sWYU6E60EvUPF6OglTXJ6xwKDFIPIaZc8E
+          49CHTDyC5hXGau0DP79/nmMnv1L+++u/u13fmqPXagCr9ct+wBfumhDJTSff3/T/dTtPjq7kg8+Y
+          v/rC689YTH8pMWlSBHo3Fjq6GzAW/wuYhtgddFXciAfoFoZVtsUMzNBeQkF88hSGhlnv4dsW7xfe
+          ysLhzVWtzpgnYatG09SPuNvnUSeOEGIBPV9d/83JF3/tFPLwXYhq3KXFE0sC6gnM6cwxDWhd//7j
+          5Tx4Hyzp1H3IWoYsrD5j87bZT30ICxjoVkfoAy7jgd1PbImLbUclZhbZDl1pPJSD2Bh/6HXPY7ab
+          x8UpfABkyLiJcs/Anp0S0tnVuakggF+8xHtl2Pza+BiFDp9zX1otKrQUgyEY5iIOlSiGi2MUXK8r
+          OgHTYz+NlWhtnkebzsYYf4KaWQ6J1Aw7wRE66/ve7pHXvbFgDJWSViCk0F/QvMJ8Ug5cTGcejMz7
+          A7scT+zhbuEPhZZYORnUgxkD5vaVv8lQNa8fy0NL/JBJj/Qcv7PWMnSsMhd6TkWJ8xt+dGfxk4Jv
+          TEZFqU6jk9o4sG5gGCyPosDVXfC1TVScx3BKHWKvXJKR8mi8KXaPOGyaXw77rtvvHDQmGtdXEmbK
+          Rdl4Po0wQSTF1hzqO12yDuIeGRPkqP4OHDpY9CxJeAKhRya0dnmk0SJvoj74Itq7xHbjpvQgIWMN
+          RtY975HyHOdZHPO3nrZcuLGGaedQr/FanOO+pYdQ/bXQPiSJRwMzctKfJ2jwUCn1B50DuX96NoF0
+          kaDV3Odgh3Ogo2ZyH4JJkxUj3vn1NMoihzfGinB4jB2eO10VPr5QwS5NPE6R6ObTk8Xkx8k5BZms
+          BLbhkTBSeFrZj3y0fJKI/0n8cqfsOY091/h40bEPau8fKFOFnzNN3vo/ejis7Hg2XFpc3El/gcDf
+          cFatmlycGjc6Y98JC8EmC2L+WMpHZVJDizYu0nLrh9hiWtAHL6PWxMTx3OolD60WWRgWzJlD33RR
+          oNUjsRw2PmlfNJH8mZs5HTlkHw/qCyRN24M3ffe0Ow1VhRdMsLFxdPRVkk4uLkBNotooJFifR+Xr
+          LE0ZgrWqxG1Yh1K/qhfCltBTcb4tZXsso5MPRV4TCMkUWLRgphnad4j6zPiEfjjOjFNBhSK9NIaw
+          5zeDFRRqDqr9ly6zjjh8+R5u0llq45z7JDxZXTbgyAckzXCmTDG6QnQtM9sFdM8vVULUlbZEbCCj
+          qBCKT/vM4TY6BMh9aDQ3zQIR4n/xeJbVmup6dCd+Z6jVUCVSioiEf2e6UkqvDYIen9ZWenPrgoEY
+          8xpKgsHjsad0+vOqeyvCLNsfHxzz16HS0Oh/RYezvycwEFByIQjUE6hd6Ej/87yN8eVKbO/XaF5V
+          YRJa7PT8IbYdKKJTE8O/h4SPYlU0StfMi7mV+o3isd1Sexq31iCb55rjbYnBmEkRBHkakZ6E3evP
+          sJ/m9HqtRxfORiqM9UgyULDLtziDqCh0a2NQBboGjzq+0z4mAHQS6mvlHe+YOXkONPw8TmPJB6D5
+          /4fLw5kbgKXyLtTPeXFCCSgwu5P7y9+WlkNrz7FGd3KlbFESVOCrDwevd06GfSK+FdCd/iQWN389
+          oN6nfd7hUu7mBB2oBoMRUBGNYIXzjtuFK0NmK7gJnG9mLA8bRoLXUzB8CKI+kdAQP/GXdrWValPO
+          Wa/eeNZaYZWOeD1Yaqb5vFPvlw1pbBbfEAl/s34c0R4wW3n7327Y303mU0NJuT+j2/bD0ujLaeUJ
+          KQMRuEebKsq6nGsXT9lg1+RQUrmgtl+e1m2j81z/wXpJyBFgboOqsQrKcEPMjZFlM5BzgmV+pQQb
+          6X68P3sld4vRIEPkMMkNCI17nShW/ZDZjCmWmO5BtuN2vYrvrhSDNmDJi3abED4RHPkEOwXE3qv+
+          chvFMECPvupgo9jbxrW9ZIk63tAVNjipmtJVRVLQDWaXpV0D7aRD5fbNsd779s3GjMQfYxaNTOdT
+          wUVzX7LqZ056lNNexEXUaGu7eRjpM+TxCkgziRjQ//19H/YAgDK8xWY/ZJPr5tebUc978UrQ4IJI
+          tgrdTfVNYzyO+sPHSg3yjQgWGt3tsP4Mc7WgEG7rucaVGIXlJbDzEa7VRob+57HKKcgDzeKONAG3
+          B0NAp4tIYFl7XFEPW25NuwZ4WMkJwJxdZbBej4uclZHWozDTNVqPqFZsSZBLSL801Gyec6VK0/nM
+          M3sPGSaU4CVx6slSRb5MSI9ZoQJ6vXbe7Blh8NjIVyS7krvvyX75b19T83YxYWtW0gcx7esTHlZW
+          qyDpWQ8HfiSisyfpYUcXoDK8kAxp86nvXoNCauFln8qRjyuYZ+zo1+PY3fa51Genipfmz5jeBZyY
+          9LZ77pOHmi8/zo3vueVYCVaYRn/kLzMIh69NSP+2GjaQRWEmD3rcmrFgVVQ+dNj7YCTLgTqPIps/
+          FyfzKdv/zNwBz5w7v/2E5UaMcUSe+g0Aefyj9C338QC/P15b/yIEz619RvZoo8JJObSh96WKBWhq
+          TPOoWIx6kx6r6QhXTnG1j/qfTNHlGNaCFw7H9g2whEy+lsDqnlKDOQW5tHbUyAqKt5Z0VczMlTyN
+          rMT9ktqcTawxMlShHNTdOTHebHN2WAnfCAGXB994g8K0dlMyXAa9gE/vZYD+Ev3gAYRgA+X8DeAX
+          Jtfxc7S8Rxyxc+WVumo2rXsrEPTN3og/lSUkX/3Pve0412kqt98d11AQQtkhkEXdXdMvpOc5lCiD
+          8kVczQt4XQ2DKG1iqjG3i/zrL/YqQY6u3NZXDTwXb861E1vbeDXm+wB3U7qZBvO2xTo5EokALy/7
+          Pc4gONXKhJ1LP5zdrfHSMkVdCi1SFm6MZ+BD93B1oDLz0IH4q1S7BxHtVWOFBhBXXLSEQv7eMA5s
+          onuL48iGnwO9tdpVSsXNRCOi9PDtIGRMHxIvXVhFv87OpZIqiL6dFz1czdEXiZvvsTAT0UIp4D5Y
+          dZ5Q6r8nHc6eX1/ru2blYZHKzVa3rzk9l0VlOwNCWRDFrCujmIp3TS194AJOG1kLqM4SnVxW7Tdf
+          obEXUZM3Aqv8oXQedhvn4JTCf6q/HYUJPxoZ6QrKLCqCNMs/jI/Q4W4sUoqTz2IXAV/MnCa24czd
+          +UjLrdHH6n/togLHZ7Xb8cly1k6FztkvePP7qkCYxr2lbcH23oFmVtAcoWIhtuAwpZTXP+cLeCij
+          RMj5xwk9efQZ1oqgBUmpjH+VBLEYnTZPDQP+Oip05dHvoHmefdFyOQk91Q860eqWSzFYdGGhn/qw
+          iTauQiD0GvC8gYX7nrcPVfbZu+d1vSoN/lhn4aMAeBVsfvLEN2NHgCZw3aL5yUlrJ+35U0hIIH5/
+          bbrdGigncXJaLnNnZc/eJjLlIS/dg9iYskZnX7SfDOkKcLrlu0Y2Cc7huI9TTlw6a/ARaS2ZviFH
+          ffzdwqB4SoEuMOO2dA6W1241sZnn6pot29uZg2jXHRnyD8Shmnmq9SWXX3fmd+jZCDrwZerfywzZ
+          OK47vAsqDStBMx+E+mATdCrHXQ3TgByYZ7Mz567jRpVHXw+4AV1ASzRHRTyl6aujA/TkxsjupUaT
+          HwsbCF6mfHc5lkjkDsBcEsqUI9WR1ljKwrQgT34w7zb3RTsf1jQ9FTAN9W8Uxz6Kuasy6GeMcglS
+          TPXtUYAYTgWMWC0q11eRYTSB0ynhb2YCIFLs0iqFSJc5TlxvZDrwSxtCrQUrRDH9d9YMsyiXr2my
+          iai9GnqHBr3KEZA4qtLVDR7f9eZfkYEyRNBH5JMsZlt/aoqLkqNxX/oIV9dwm+/fBNR4TNNvSj9o
+          d9BT8cXMTAXiRsyCZI8Nv73hvBSFV/2AAb6oWquahpZJzOhNQtYClvPxuZC1sZcPLnOa3CIWwJcB
+          3XLmEha6a7F+WASV7D+QNeVdDvExf8X7+qBYc5ysqj8wRZi/4vVmiLhlqvAlQBdeAbS2peGn/2+w
+          fqig6osNfOJBTE57XufMAzUdUf/vSYju/GhjguGhyu8Aa9NSyWIj74xEUL+sgc1AGbBDqC0TQQsV
+          mGSLMNQwTZYKXCKF1j2YZt3clf9MdWCxA2gQ24Ja39xep4sWqnlvCVH7DzdWNqpZ4rQm4UNuqm1h
+          TLk8LYUM7Yg6X1ne3/wb9uC1Jjxgef55zJ9YYoxk4TiCG7N1TTBtPrF3n60igwRd6548e2q3DFYi
+          V7miCw4YxIrsMu4GevgsGLHKgxNLcngqQ6Kb8tuA33EiwABFoB2W1JzROe0pI4ykjmOMMbJELh5R
+          sJcGffKZkhqwj6Z1vevOoZ2XDsqdfHFB907oThhSLo6dIHEqTmNa6pqJXHjC0e1ELfwRbEFMAAAA
+          AAAAAAAAAAAAAAA=
+          FGEOF
+          base64 -d > "$R/mipmap-nodpi/ic_launcher.webp" <<'ICEOF'
+          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
+          ICEOF
+          cat > "$R/mipmap-anydpi-v26/ic_launcher.xml" <<'XMLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+          </adaptive-icon>
+          XMLEOF
+          cat > "$R/values/ic_launcher_background.xml" <<'XMLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#2B2926</color>
+          </resources>
+          XMLEOF
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's|android:label=|android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:label=|' "$M"
+          grep -c 'android:icon=' "$M"
+          G=android/app/build.gradle.kts
+          sed -i 's/applicationId = "com.raport.redalert"/applicationId = "kz.base64E.redalert"/' "$G"
+          grep -n 'applicationId' "$G"
+          grep -q 'kz.base64E.redalert' "$G"
+
+      - name: Build APK
+        run: |
+          set -e
+          gradle -p android :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Sign APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          OUT=android/app/build/outputs/apk/debug
+          "$BT/zipalign" -f -p 4 "$OUT/app-debug.apk" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$KS_PATH" --ks-key-alias "$KS_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
+            --out "$OUT/berlions-signed.apk" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --print-certs "$OUT/berlions-signed.apk" | tee /tmp/certs.txt
+          grep -qi "$KS_FP" /tmp/certs.txt
+
+      - name: Verify APK
+        run: |
+          set -e
+          APK="android/app/build/outputs/apk/debug/berlions-signed.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: redalert-apk
+          path: android/app/build/outputs/apk/debug/berlions-signed.apk
+          if-no-files-found: error
+          retention-days: 7
